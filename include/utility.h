@@ -55,6 +55,8 @@
 #include <array>
 #include <thread>
 #include <mutex>
+#include <sys/stat.h>
+#include <unistd.h>
 
 using namespace std;
 
@@ -90,6 +92,7 @@ public:
     bool useGpsElevation;
     float gpsCovThreshold;
     float poseCovThreshold;
+    float GPSDISTANCE;
 
     // Save pcd
     bool savePCD;
@@ -123,6 +126,7 @@ public:
 
     // voxel filter paprams
     float mappingSurfLeafSize ;
+    float CurrScanLeafSize ;
     float surroundingKeyframeMapLeafSize;
     float loopClosureICPSurfLeafSize ;
 
@@ -171,9 +175,68 @@ public:
         nh.param<bool>("liorf/useGpsElevation", useGpsElevation, false);
         nh.param<float>("liorf/gpsCovThreshold", gpsCovThreshold, 2.0);
         nh.param<float>("liorf/poseCovThreshold", poseCovThreshold, 25.0);
+        nh.param<float>("liorf/gpsDistance", GPSDISTANCE, 0.5);
 
         nh.param<bool>("liorf/savePCD", savePCD, false);
         nh.param<std::string>("liorf/savePCDDirectory", savePCDDirectory, "/Downloads/LOAM/");
+
+        std::cout << __FILE__ << " : " << __LINE__ << " savePCDDirectory: " << savePCDDirectory << std::endl;
+        std::cout << __FILE__ << " : " << __LINE__ << " GPSDISTANCE: " << GPSDISTANCE << std::endl;
+        
+        // Create directory if it doesn't exist
+        if (savePCD && !savePCDDirectory.empty()) {
+            // Check if directory exists
+            struct stat info;
+            if (stat(savePCDDirectory.c_str(), &info) != 0) {
+                // Directory doesn't exist, create it
+                std::cout << "Creating directory: " << savePCDDirectory << std::endl;
+                int result = system((std::string("mkdir -p ") + savePCDDirectory ).c_str());
+                if (result == 0) {
+                    std::cout << "Successfully created directory: " << savePCDDirectory << std::endl;
+                } else {
+                    std::cerr << "Failed to create directory: " << savePCDDirectory << std::endl;
+                }
+
+            } else if (info.st_mode & S_IFDIR) {
+                std::cout << "Directory already exists: " << savePCDDirectory << std::endl;
+            } else {
+                std::cerr << "Path exists but is not a directory: " << savePCDDirectory << std::endl;
+            }
+
+            std::string pcd_subdir = savePCDDirectory + "/pcd";
+            std::string loop_gicp_subdir = savePCDDirectory + "/loop_gicp";
+ 
+            if (stat(pcd_subdir.c_str(), &info) != 0) {
+                // Directory doesn't exist, create it
+                std::cout << "Creating directory: " << pcd_subdir << std::endl;
+                int result = system((std::string("mkdir -p ") + pcd_subdir).c_str());
+                if (result == 0) {
+                    std::cout << "Successfully created directory: " << pcd_subdir << std::endl;
+                } else {
+                    std::cerr << "Failed to create directory: " << pcd_subdir << std::endl;
+                }
+
+            } else if (info.st_mode & S_IFDIR) {
+                std::cout << "Directory already exists: " << pcd_subdir << std::endl;
+            } else {
+                std::cerr << "Path exists but is not a directory: " << pcd_subdir << std::endl;
+            }
+
+            if (stat(loop_gicp_subdir.c_str(), &info) != 0) {
+                // Directory doesn't exist, create it
+                std::cout << "Creating directory: " << loop_gicp_subdir << std::endl;
+                int result = system((std::string("mkdir -p ") + loop_gicp_subdir).c_str());
+                if (result == 0) {
+                    std::cout << "Successfully created directory: " << loop_gicp_subdir << std::endl;
+                } else {
+                    std::cerr << "Failed to create directory: " << loop_gicp_subdir << std::endl;
+                }
+            } else if (info.st_mode & S_IFDIR) {
+                std::cout << "Directory already exists: " << loop_gicp_subdir << std::endl;
+            } else {
+                std::cerr << "Path exists but is not a directory: " << loop_gicp_subdir << std::endl;
+            }
+        }
 
         std::string sensorStr;
         nh.param<std::string>("liorf/sensor", sensorStr, "");
@@ -200,6 +263,7 @@ public:
                 "Invalid sensor type (must be either 'velodyne' or 'ouster' or 'livox' or 'robosense' or 'mulran'): " << sensorStr);
             ros::shutdown();
         }
+        std::cout << __FILE__ << " : " << __LINE__ << " sensorStr: " << sensorStr << std::endl;
 
         nh.param<int>("liorf/N_SCAN", N_SCAN, 16);
         nh.param<int>("liorf/Horizon_SCAN", Horizon_SCAN, 1800);
@@ -224,7 +288,8 @@ public:
         extTrans = Eigen::Map<const Eigen::Matrix<double, -1, -1, Eigen::RowMajor>>(extTransV.data(), 3, 1);
         extQRPY = Eigen::Quaterniond(extRPY).inverse();
 
-        nh.param<float>("liorf/mappingSurfLeafSize", mappingSurfLeafSize, 0.2);
+        nh.param<float>("liorf/mappingSurfLeafSize", mappingSurfLeafSize, 0.4);
+        nh.param<float>("liorf/CurrScanLeafSize", CurrScanLeafSize, 0.2);
         nh.param<float>("liorf/surroundingKeyframeMapLeafSize", surroundingKeyframeMapLeafSize, 0.2);
 
         nh.param<float>("liorf/z_tollerance", z_tollerance, FLT_MAX);
@@ -236,10 +301,10 @@ public:
         nh.param<float>("liorf/surroundingkeyframeAddingDistThreshold", surroundingkeyframeAddingDistThreshold, 1.0);
         nh.param<float>("liorf/surroundingkeyframeAddingAngleThreshold", surroundingkeyframeAddingAngleThreshold, 0.2);
         nh.param<float>("liorf/surroundingKeyframeDensity", surroundingKeyframeDensity, 1.0);
-        nh.param<float>("liorf/loopClosureICPSurfLeafSize", loopClosureICPSurfLeafSize, 0.3);
+        nh.param<float>("liorf/loopClosureICPSurfLeafSize", loopClosureICPSurfLeafSize, 0.2);
         nh.param<float>("liorf/surroundingKeyframeSearchRadius", surroundingKeyframeSearchRadius, 50.0);
 
-        nh.param<bool>("liorf/loopClosureEnableFlag", loopClosureEnableFlag, false);
+        nh.param<bool>("liorf/loopClosureEnableFlag", loopClosureEnableFlag, true);
         nh.param<float>("liorf/loopClosureFrequency", loopClosureFrequency, 1.0);
         nh.param<int>("liorf/surroundingKeyframeSize", surroundingKeyframeSize, 50);
         nh.param<float>("liorf/historyKeyframeSearchRadius", historyKeyframeSearchRadius, 10.0);

@@ -2,8 +2,8 @@ cmake_minimum_required(VERSION 2.8.3)
 project(liorf)
 
 set(CMAKE_BUILD_TYPE "Release")
-# set(CMAKE_CXX_FLAGS "-std=c++11")
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_FLAGS "-std=c++14")
+# set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -g -pthread")
 
 find_package(catkin REQUIRED COMPONENTS
@@ -27,6 +27,7 @@ find_package(PCL REQUIRED QUIET)
 find_package(OpenCV REQUIRED QUIET)
 find_package(GTSAM REQUIRED QUIET)
 find_package(Boost REQUIRED COMPONENTS timer)
+find_library(LZ4_LIB lz4)
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "/usr/share/cmake/geographiclib/")
 find_package(GeographicLib REQUIRED)
@@ -65,6 +66,22 @@ catkin_package(
   visualization_msgs
 )
 
+add_library(nano_gicp_lib
+  include/nano_gicp/nanoflann.cc
+  include/nano_gicp/lsq_registration.cc
+  include/nano_gicp/nano_gicp.cc
+)
+
+target_link_libraries(nano_gicp_lib
+  ${PCL_LIBRARIES}
+  ${OPENMP_LIBS}
+)
+
+target_include_directories(nano_gicp_lib PUBLIC
+  nano_gicp/include
+  ${PCL_INCLUDE_DIRS}
+)
+
 # include directories
 include_directories(
   lib
@@ -93,14 +110,32 @@ file(GLOB common_lib "lib/*.cpp")
 # Range Image Projection
 add_executable(${PROJECT_NAME}_imageProjection src/imageProjection.cpp ${common_lib})
 add_dependencies(${PROJECT_NAME}_imageProjection ${catkin_EXPORTED_TARGETS} ${PROJECT_NAME}_generate_messages_cpp)
-target_link_libraries(${PROJECT_NAME}_imageProjection ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES})
+target_link_libraries(${PROJECT_NAME}_imageProjection ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES}
+        /usr/local/lib/libtbb.so
+        /usr/local/lib/libtbbmalloc.so
+        /usr/local/lib/libtbbmalloc_proxy.so
+        )
 
 # Mapping Optimization
 add_executable(${PROJECT_NAME}_mapOptmization src/mapOptmization.cpp ${common_lib} include/Scancontext.cpp)
 add_dependencies(${PROJECT_NAME}_mapOptmization ${catkin_EXPORTED_TARGETS} ${PROJECT_NAME}_generate_messages_cpp)
 target_compile_options(${PROJECT_NAME}_mapOptmization PRIVATE ${OpenMP_CXX_FLAGS})
-target_link_libraries(${PROJECT_NAME}_mapOptmization Boost::timer ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} ${OpenMP_CXX_FLAGS} ${GeographicLib_LIBRARIES} gtsam)
+target_link_libraries(${PROJECT_NAME}_mapOptmization Boost::timer ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} ${OpenMP_CXX_FLAGS} ${GeographicLib_LIBRARIES} 
+        gtsam
+        /usr/local/lib/libtbb.so
+        /usr/local/lib/libtbbmalloc.so
+        /usr/local/lib/libtbbmalloc_proxy.so
+        ${LZ4_LIB}
+        nano_gicp_lib
+  )
 
 # IMU Preintegration
 add_executable(${PROJECT_NAME}_imuPreintegration src/imuPreintegration.cpp ${common_lib})
-target_link_libraries(${PROJECT_NAME}_imuPreintegration Boost::timer ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} gtsam)
+target_link_libraries(${PROJECT_NAME}_imuPreintegration Boost::timer ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} 
+      gtsam
+        /usr/local/lib/libtbb.so
+        /usr/local/lib/libtbbmalloc.so
+        /usr/local/lib/libtbbmalloc_proxy.so
+        )
+
+

@@ -22,7 +22,7 @@
 #include <pcl/filters/voxel_grid.h>
 #include <pcl_conversions/pcl_conversions.h>
 
-#include "nanoflann.hpp"
+// Use the nanoflann implementation from nano_gicp to avoid symbol conflicts
 #include "KDTreeVectorOfVectorsAdaptor.h"
 
 #include "tictoc.h"

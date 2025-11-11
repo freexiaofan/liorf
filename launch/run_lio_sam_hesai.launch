@@ -1,0 +1,20 @@
+<launch>
+
+    <arg name="project" default="liorf"/>
+    
+    <!-- Parameters -->
+    <rosparam file="$(find liorf)/config/hilti_pandar.yaml" command="load" />
+
+    <!--- LOAM -->
+    <include file="$(find liorf)/launch/include/module_loam.launch" />
+
+    <arg name="bag_path" default="/mnt/nvme0n1p2/data/1028_3.bag"/>
+    <!-- <arg name="bag_path" default="/mnt/nvme0n1p2/data/1030_3bag.bag"/> -->
+    
+    <node pkg="rosbag" type="play" name="bag_play"   args="$(arg bag_path)  -d 3 -s 0  -r 0.20  "/>
+
+
+    <!--- Run Rviz-->
+    <include file="$(find liorf)/launch/include/module_rviz.launch" />
+
+</launch>

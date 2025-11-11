@@ -259,11 +259,14 @@ public:
             pcl::moveFromROSMsg(currentCloudMsg, *tmpRobosenseCloudIn);
             laserCloudIn->points.resize(tmpRobosenseCloudIn->size());
             laserCloudIn->is_dense = tmpRobosenseCloudIn->is_dense;
-
+            laserCloudIn->is_dense =true;
             double start_stamptime = tmpRobosenseCloudIn->points[0].timestamp;
             for (size_t i = 0; i < tmpRobosenseCloudIn->size(); i++) {
                 auto &src = tmpRobosenseCloudIn->points[i];
                 auto &dst = laserCloudIn->points[i];
+                if (std::isnan(src.x) || std::isnan(src.y) || std::isnan(src.z)) {
+                    continue;
+                }
                 dst.x = src.x;
                 dst.y = src.y;
                 dst.z = src.z;
@@ -313,10 +316,8 @@ public:
         if (deskewFlag == 0)
         {
             deskewFlag = -1;
-            for (auto &field : currentCloudMsg.fields)
-            {
-                if (field.name == "time" || field.name == "t")
-                {
+            for (auto &field : currentCloudMsg.fields) {
+                if (field.name == "time" || field.name == "t" || field.name == "timestamp" || field.name == "timestampSec") {
                     deskewFlag = 1;
                     break;
                 }
@@ -581,6 +582,9 @@ public:
             if (range < lidarMinRange || range > lidarMaxRange)
                 continue;
 
+            if ( thisPoint.z < -10.0) 
+                continue;
+
             int rowIdn = laserCloudIn->points[i].ring;
             if (rowIdn < 0 || rowIdn >= N_SCAN)
                 continue;
@@ -600,8 +604,36 @@ public:
     void publishClouds()
     {
         cloudInfo.header = cloudHeader;
-        cloudInfo.cloud_deskewed  = publishCloud(pubExtractedCloud, fullCloud, cloudHeader.stamp, lidarFrame);
+        pcl::PointCloud<PointType>::Ptr  temp_Cloud(new pcl::PointCloud<PointType>());
+        for (int i = 0; i < fullCloud->points.size(); ++i) {
+            if (   std::fabs(fullCloud->points[i].x) < 3.0
+                && std::fabs(fullCloud->points[i].y) < 3.0 ) 
+                {
+                    continue;
+                }
+
+            if (                    fullCloud->points[i].z < -2.30
+                && std::fabs(fullCloud->points[i].x + 5.0) < 3.0
+                      && std::fabs(fullCloud->points[i].y) < 3.0 ) 
+                {
+                    continue;
+                }
+
+            temp_Cloud->points.push_back(fullCloud->points[i]);
+        }
+
+        cloudInfo.cloud_deskewed  = publishCloud(pubExtractedCloud, temp_Cloud, cloudHeader.stamp, lidarFrame);
         pubLaserCloudInfo.publish(cloudInfo);
+
+        // Save fullCloud to PCD file with timestamp filename
+        std::stringstream filename;
+        filename << savePCDDirectory + "pcd/" << std::fixed << std::setprecision(3) << cloudHeader.stamp.toSec() << ".pcd";
+        ROS_WARN_ONCE("Saved full cloud to: %s with %d points", filename.str().c_str(), temp_Cloud->size());
+        // ROS_WARN("Saved full cloud to: %s with %d points", filename.str().c_str(), temp_Cloud.size());
+        temp_Cloud->height = 1;
+        temp_Cloud->width = temp_Cloud->points.size();
+        // pcl::io::savePCDFileASCII(filename.str(), temp_Cloud);
+        temp_Cloud->clear();
     }
 };
 
