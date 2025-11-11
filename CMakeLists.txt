@@ -20,6 +20,7 @@ find_package(catkin REQUIRED COMPONENTS
   nav_msgs
   message_generation
   visualization_msgs
+  chcnav
 )
 
 find_package(OpenMP REQUIRED)
@@ -64,6 +65,7 @@ catkin_package(
   message_runtime
   message_generation
   visualization_msgs
+  chcnav
 )
 
 add_library(nano_gicp_lib

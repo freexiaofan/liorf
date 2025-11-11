@@ -80,6 +80,7 @@ public:
     string imuTopic;
     string odomTopic;
     string gpsTopic;
+    string chcnavTopic;
 
     //Frames
     string lidarFrame;
@@ -165,6 +166,7 @@ public:
         nh.param<std::string>("liorf/imuTopic", imuTopic, "imu_correct");
         nh.param<std::string>("liorf/odomTopic", odomTopic, "odometry/imu");
         nh.param<std::string>("liorf/gpsTopic", gpsTopic, "odometry/gps");
+        nh.param<std::string>("liorf/chcnavTopic", chcnavTopic, "chcnav/devpvt");
 
         nh.param<std::string>("liorf/lidarFrame", lidarFrame, "base_link");
         nh.param<std::string>("liorf/baselinkFrame", baselinkFrame, "base_link");

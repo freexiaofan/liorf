@@ -3,6 +3,8 @@
 #include "liorf/save_map.h"
 // <!-- liorf_yjz_lucky_boy -->
 #include <sensor_msgs/NavSatFix.h>
+#include <fstream>
+#include <iomanip>
 #include <gtsam/geometry/Rot3.h>
 #include <gtsam/geometry/Pose3.h>
 #include <gtsam/slam/PriorFactor.h>
@@ -21,6 +23,8 @@
 
 #include <GeographicLib/Geocentric.hpp>
 #include <GeographicLib/LocalCartesian.hpp>
+#include <GeographicLib/UTMUPS.hpp>
+#include <chcnav/hcinspvatzcb.h>
 
 #include "Scancontext.h"
 // Correct nano_gicp include: header is nano_gicp.h under include/nano_gicp
@@ -93,6 +97,7 @@ public:
 
     ros::Subscriber subCloud;
     ros::Subscriber subGPS;
+    ros::Subscriber subchcnav;
     ros::Subscriber subLoop;
 
     ros::ServiceServer srvSaveMap;
@@ -164,15 +169,22 @@ public:
     Eigen::Affine3f incrementalOdometryAffineBack;
 
     GeographicLib::LocalCartesian gps_trans_;
+    
+    // UTM projection variables
+    int utm_zone_;
+    bool utm_northp_;
+    double utm_origin_x_, utm_origin_y_, utm_origin_z_;
+    bool utm_initialized_;
 
     // scancontext loop closure
     SCManager scManager;
     std::ofstream tumTrajectoryFile;
+    std::ofstream gpsTrajectoryFile; // For GPS trans_local_ TUM format output
 
     mapOptimization()
     {
         ISAM2Params parameters;
-        parameters.relinearizeThreshold = 0.2;
+        parameters.relinearizeThreshold = 0.1;
         parameters.relinearizeSkip = 1;
         isam = new ISAM2(parameters);
 
@@ -184,6 +196,7 @@ public:
 
         subCloud = nh.subscribe<liorf::cloud_info>("liorf/deskew/cloud_info", 1000, &mapOptimization::laserCloudInfoHandler, this, ros::TransportHints().tcpNoDelay());
         subGPS   = nh.subscribe<sensor_msgs::NavSatFix> (gpsTopic, 2000, &mapOptimization::gpsHandler, this, ros::TransportHints().tcpNoDelay());
+        subchcnav   = nh.subscribe<chcnav::hcinspvatzcb> ("/chcnav/devpvt", 2000, &mapOptimization::chcnavHandler, this, ros::TransportHints().tcpNoDelay());
         subLoop  = nh.subscribe<std_msgs::Float64MultiArray>("lio_loop/loop_closure_detection", 1000, &mapOptimization::loopInfoHandler, this, ros::TransportHints().tcpNoDelay());
 
         srvSaveMap  = nh.advertiseService("liorf/save_map", &mapOptimization::saveMapService, this);
@@ -212,7 +225,53 @@ public:
         } else {
             ROS_ERROR("Failed to open TUM trajectory file: %s", tumFileName.c_str());
         }
+        
+        // Open GPS trajectory file for trans_local_ output
+        std::string gpsFileName = savePCDDirectory + "/gps_trans_local_trajectory.tum";
+        gpsTrajectoryFile.open(gpsFileName);
+        if (gpsTrajectoryFile.is_open()) {
+            ROS_INFO("GPS trans_local_ trajectory file opened: %s", gpsFileName.c_str());
+        } else {
+            ROS_ERROR("Failed to open GPS trans_local_ trajectory file: %s", gpsFileName.c_str());
+        }
+        
+        // Initialize UTM projection variables
+        utm_initialized_ = false;
+        utm_zone_ = 0;
+        utm_northp_ = true;
+        utm_origin_x_ = 0.0;
+        utm_origin_y_ = 0.0;
+        utm_origin_z_ = 0.0;
+        
         allocateMemory();
+    }
+
+    void convertToUTM(double lat, double lon, double alt, double& x, double& y, double& z)
+    {
+        // Initialize UTM projection on first GPS message
+        if (!utm_initialized_) {
+            // Convert first GPS point to UTM to establish zone and origin
+            double temp_x, temp_y;
+            GeographicLib::UTMUPS::Forward(lat, lon, utm_zone_, utm_northp_, temp_x, temp_y);
+            
+            // Set the first point as origin
+            utm_origin_x_ = temp_x;
+            utm_origin_y_ = temp_y;
+            utm_origin_z_ = alt;
+            utm_initialized_ = true;
+
+            ROS_INFO("UTM projection initialized: Zone %d%c, Origin: %.3f, %.3f, %.3f",
+                     utm_zone_, utm_northp_ ? 'N' : 'S', utm_origin_x_, utm_origin_y_, utm_origin_z_);
+        }
+        
+        // Convert current GPS point to UTM
+        double utm_x, utm_y;
+        GeographicLib::UTMUPS::Forward(lat, lon, utm_zone_, utm_northp_, utm_x, utm_y);
+        
+        // Calculate relative position from origin
+        x = utm_x - utm_origin_x_;
+        y = utm_y - utm_origin_y_;
+        z = alt - utm_origin_z_; // Use GPS altitude directly
     }
 
     void allocateMemory()
@@ -290,22 +349,45 @@ public:
         }
     }
 
-    void gpsHandler(const sensor_msgs::NavSatFixConstPtr& gpsMsg)
-    {
-        if (gpsMsg->status.status != 2)
-        {
-            ROS_DEBUG("NOT  Get GPS FIXED STATUS %d ", gpsMsg->status.status);
-            return;
+    // **简化的运动一致性检查：基于相邻位置向量方向**
+    bool checkMotionConsistency( Eigen::Vector3d current_direction, 
+                                 Eigen::Vector3d prev_direction) {
+                                    
+        // **核心：相邻位移向量方向一致性检查**
+        auto v1 = current_direction.normalized();
+        auto v2 = prev_direction.normalized();
+
+        // 计算两个方向向量的夹角
+        double dot_product = v1.dot(v2);
+        double angle_diff = std::acos(dot_product);
+        // **方向变化阈值：60度**
+        const double MAX_DIRECTION_CHANGE = M_PI / 3;  // 60度
+        if (angle_diff > MAX_DIRECTION_CHANGE) {
+            ROS_WARN("  Angle difference: %.1f deg (max: %.1f deg)", angle_diff * 180.0 / M_PI, MAX_DIRECTION_CHANGE * 180.0 / M_PI);
+            return false;  // 方向变化过大，拒绝此位置
         }
+        return true;
+    }
+
+    void chcnavHandler(const chcnav::hcinspvatzcbConstPtr& gpsMsg)
+    {
+        // ROS_ERROR("chcnavHandler is disabled temporarily.");
+        // if (gpsMsg->status.status != 2)
+        // {
+        //     ROS_DEBUG("NOT  Get GPS FIXED STATUS %d ", gpsMsg->status.status);
+        //     return;
+        // }
 
         Eigen::Vector3d trans_local_;
+        
+        // Use UTM projection instead of LocalCartesian
+        convertToUTM(gpsMsg->latitude, gpsMsg->longitude, gpsMsg->altitude, 
+                     trans_local_[0], trans_local_[1], trans_local_[2]);
+
+        // **新增: 保存UTM原点信息到文件**
         static bool first_gps = false;
         if (!first_gps) {
             first_gps = true;
-            Eigen::Vector3d utm_origin;
-            gps_trans_.Forward(gpsMsg->latitude, gpsMsg->longitude, gpsMsg->altitude, utm_origin[0], utm_origin[1], utm_origin[2]);
-
-            // **新增: 保存UTM原点到文件**
             std::string utm_origin_file = savePCDDirectory + "/utm_origin.txt";
             std::ofstream utm_file(utm_origin_file);
             if (utm_file.is_open())
@@ -316,21 +398,150 @@ public:
                          << gpsMsg->longitude << " "
                          << std::setprecision(2) << gpsMsg->altitude << std::endl;
 
-                utm_file << "# UTM Origin Coordinates" << std::endl;
-                utm_file << "# Format: X Y Z (meters)" << std::endl;
+                utm_file << "# UTM Zone: " << utm_zone_ << (utm_northp_ ? "N" : "S") << std::endl;
+                utm_file << "# UTM Origin Coordinates (absolute)" << std::endl;
+                utm_file << "# Format: Easting Northing Altitude (meters)" << std::endl;
                 utm_file << std::fixed << std::setprecision(6)
-                         << utm_origin[0] << " " << utm_origin[1] << " " << utm_origin[2] << std::endl;
+                         << utm_origin_x_ << " " << utm_origin_y_ << " " << utm_origin_z_ << std::endl;
                 utm_file.close();
                 ROS_INFO("Successfully saved UTM origin to: %s", utm_origin_file.c_str());
+                ROS_INFO("UTM Zone: %d%c, Origin: (%.3f, %.3f, %.3f)", utm_zone_, utm_northp_ ? 'N' : 'S', utm_origin_x_, utm_origin_y_, utm_origin_z_);
             }
             else
             {
                 ROS_WARN("Failed to open UTM origin file: %s", utm_origin_file.c_str());
             }
-            gps_trans_.Reset(gpsMsg->latitude, gpsMsg->longitude, gpsMsg->altitude);
         }
 
-        gps_trans_.Forward(gpsMsg->latitude, gpsMsg->longitude, gpsMsg->altitude, trans_local_[0], trans_local_[1], trans_local_[2]);
+        // Write trans_local_ to TUM format file for testing
+        if (gpsTrajectoryFile.is_open()) {
+            double timestamp = gpsMsg->header.stamp.toSec();
+            gpsTrajectoryFile << std::fixed << std::setprecision(6) << timestamp << " "
+                             << std::setprecision(9) 
+                             << trans_local_[0] << " " << trans_local_[1] << " " << trans_local_[2] << " "
+                             << "0.0 0.0 0.0 1.0" << std::endl; // quaternion identity for GPS positions
+            gpsTrajectoryFile.flush(); // Ensure data is written immediately
+        }
+
+        nav_msgs::Odometry gps_odom;
+        gps_odom.header = gpsMsg->header;
+        gps_odom.header.frame_id = "map";
+        gps_odom.pose.pose.position.x = trans_local_[0];
+        gps_odom.pose.pose.position.y = trans_local_[1];
+        gps_odom.pose.pose.position.z = trans_local_[2];
+        gps_odom.pose.pose.orientation = tf::createQuaternionMsgFromRollPitchYaw(0.0, 0.0, 0.0);
+
+        // 使用原始GPS协方差作为里程计协方差
+        gps_odom.pose.covariance[0]  = gpsMsg->position_stdev[0];
+        gps_odom.pose.covariance[7]  = gpsMsg->position_stdev[1];
+        gps_odom.pose.covariance[14] = gpsMsg->position_stdev[2];
+        // std::cout << " GPS Covariance from CHCNAV: "
+        //           << gps_odom.pose.covariance[0] << ", "
+        //           << gps_odom.pose.covariance[7] << ", "
+        //           << gps_odom.pose.covariance[14] << std::endl;
+
+        pubGpsOdom.publish(gps_odom);
+        mtxGpsInfo.lock();
+        gpsQueue.push_back(gps_odom);
+        mtxGpsInfo.unlock();
+    }
+    
+
+    void gpsHandler(const sensor_msgs::NavSatFixConstPtr& gpsMsg)
+    {
+        if (gpsMsg->status.status != 2)
+        {
+            ROS_DEBUG("NOT  Get GPS FIXED STATUS %d ", gpsMsg->status.status);
+            return;
+        }
+
+        Eigen::Vector3d trans_local_;
+        
+        // Use UTM projection instead of LocalCartesian
+        convertToUTM(gpsMsg->latitude, gpsMsg->longitude, gpsMsg->altitude, 
+                     trans_local_[0], trans_local_[1], trans_local_[2]);
+
+        // **新增: 保存UTM原点信息到文件**
+        static bool first_gps = false;
+        if (!first_gps) {
+            first_gps = true;
+            std::string utm_origin_file = savePCDDirectory + "/utm_origin.txt";
+            std::ofstream utm_file(utm_origin_file);
+            if (utm_file.is_open())
+            {
+                utm_file << "# Timestamp: " << std::fixed << std::setprecision(6) << gpsMsg->header.stamp.toSec() << std::endl;
+                utm_file << "# LLA Origin: " << std::fixed << std::setprecision(8)
+                         << gpsMsg->latitude << " "
+                         << gpsMsg->longitude << " "
+                         << std::setprecision(2) << gpsMsg->altitude << std::endl;
+
+                utm_file << "# UTM Zone: " << utm_zone_ << (utm_northp_ ? "N" : "S") << std::endl;
+                utm_file << "# UTM Origin Coordinates (absolute)" << std::endl;
+                utm_file << "# Format: Easting Northing Altitude (meters)" << std::endl;
+                utm_file << std::fixed << std::setprecision(6)
+                         << utm_origin_x_ << " " << utm_origin_y_ << " " << utm_origin_z_ << std::endl;
+                utm_file.close();
+                ROS_INFO("Successfully saved UTM origin to: %s", utm_origin_file.c_str());
+                ROS_INFO("UTM Zone: %d%c, Origin: (%.3f, %.3f, %.3f)", utm_zone_, utm_northp_ ? 'N' : 'S', utm_origin_x_, utm_origin_y_, utm_origin_z_);
+            }
+            else
+            {
+                ROS_WARN("Failed to open UTM origin file: %s", utm_origin_file.c_str());
+            }
+        }
+
+        // Write trans_local_ to TUM format file for testing
+        if (gpsTrajectoryFile.is_open()) {
+            double timestamp = gpsMsg->header.stamp.toSec();
+            gpsTrajectoryFile << std::fixed << std::setprecision(6) << timestamp << " "
+                             << std::setprecision(9) 
+                             << trans_local_[0] << " " << trans_local_[1] << " " << trans_local_[2] << " "
+                             << "0.0 0.0 0.0 1.0" << std::endl; // quaternion identity for GPS positions
+            gpsTrajectoryFile.flush(); // Ensure data is written immediately
+        }
+        
+        // // Debug output for UTM conversion
+        // static int gps_count = 0;
+        // if (gps_count % 50 == 0) { // Print every 50th GPS message to avoid spam
+        //     ROS_INFO("GPS #%d: LLA(%.8f, %.8f, %.2f) -> UTM(%.3f, %.3f, %.3f)", 
+        //              gps_count, gpsMsg->latitude, gpsMsg->longitude, gpsMsg->altitude,
+        //              trans_local_[0], trans_local_[1], trans_local_[2]);
+        // }
+        // gps_count++;
+
+        // Eigen::Vector3d raw_enu = trans_local_;
+        // // 距离太近则不更新 去除位置的微小跳动
+        // static Eigen::Vector3d first_enu = trans_local_;
+        // static Eigen::Vector3d direct_1 ;
+        // static bool ok = false;
+        // if (  !ok && (first_enu - raw_enu).norm() < 0.50 )
+        // {
+        //     return;
+        // }
+
+        // if (!ok)
+        // {
+        //     direct_1 = raw_enu - first_enu;
+        //     first_enu = raw_enu;
+        //     ok = true;
+        //     return;
+        // }
+        // Eigen::Vector3d direct_2 = raw_enu - first_enu;
+
+        // double v1_deg = std::atan2(direct_1(1), direct_1(0)) * 180.0 / M_PI;
+        // double v2_deg = std::atan2(direct_2(1), direct_2(0)) * 180.0 / M_PI;
+        
+        // if (checkMotionConsistency(direct_1, direct_2))
+        // {
+        //     first_enu = raw_enu;
+        //     direct_1 = direct_2;
+        // }
+        // else
+        // {
+        //     std::cout << " v1_deg and v2_deg " << v1_deg << " " << v2_deg << std::endl;
+        //     std::cout << " GNSS ODOM rejected due to motion inconsistency. " << std::endl;
+        //     return;
+        // }
 
         nav_msgs::Odometry gps_odom;
         gps_odom.header = gpsMsg->header;
@@ -665,7 +876,7 @@ public:
         // find keys
         int loopKeyCur;
         int loopKeyPre;
-        if (detectLoopClosureExternal(&loopKeyCur, &loopKeyPre) == false)
+        // if (detectLoopClosureExternal(&loopKeyCur, &loopKeyPre) == false)
             if (detectLoopClosureDistance(&loopKeyCur, &loopKeyPre) == false)
                 return;
 
@@ -688,13 +899,13 @@ public:
             double dx = curPose.x - prePose.x;
             double dy = curPose.y - prePose.y; 
             double dz = curPose.z - prePose.z;
-            double distance = sqrt(dx*dx + dy*dy + dz*dz);
+            double distance = dx*dx + dy*dy + dz*dz;
             
             ROS_WARN("=== LOOP CLOSURE DISTANCE INFO ===");
-            ROS_WARN("Current Key [%d]: Position (%.3f, %.3f, %.3f, %.3f), Time: %.3f", 
-                     loopKeyCur, curPose.x, curPose.y, curPose.z, curPose.yaw, curPose.time);
-            ROS_WARN("Previous Key [%d]: Position (%.3f, %.3f, %.3f, %.3f), Time: %.3f", 
-                     loopKeyPre, prePose.x, prePose.y, prePose.z, prePose.yaw, prePose.time);
+            // ROS_WARN("Current Key [%d]: Position (%.3f, %.3f, %.3f, %.3f), Time: %.3f", 
+            //          loopKeyCur, curPose.x, curPose.y, curPose.z, curPose.yaw, curPose.time);
+            // ROS_WARN("Previous Key [%d]: Position (%.3f, %.3f, %.3f, %.3f), Time: %.3f", 
+            //          loopKeyPre, prePose.x, prePose.y, prePose.z, prePose.yaw, prePose.time);
             ROS_WARN("Distance between loop keys: %.3f meters", distance);
             ROS_WARN("Time difference: %.3f seconds", abs(curPose.time - prePose.time));
             ROS_WARN("Key index difference: %d", abs(loopKeyCur - loopKeyPre));
@@ -706,8 +917,8 @@ public:
                 return;
             }
 
-            if(  distance > 10.0 ) {
-                ROS_WARN("========== distance toooooooooo close return ========================");
+            if(  distance > 5.0 * 5.0 ) {
+                ROS_WARN("========== distance toooooooooo far return ========================");
                 return;
             }
         } else {
@@ -1686,7 +1897,7 @@ public:
         {
             kdtreeSurfFromMap->setInputCloud(laserCloudSurfFromMapDS);
 
-            for (int iterCount = 0; iterCount < 50; iterCount++)
+            for (int iterCount = 0; iterCount < 30; iterCount++)
             {
                 laserCloudOri->clear();
                 coeffSel->clear();
@@ -1776,7 +1987,7 @@ public:
             gtSAMgraph.add(PriorFactor<Pose3>(0, trans2gtsamPose(transformTobeMapped), priorNoise));
             initialEstimate.insert(0, trans2gtsamPose(transformTobeMapped));
         }else{
-            noiseModel::Diagonal::shared_ptr odometryNoise = noiseModel::Diagonal::Variances((gtsam::Vector(6) << 1e-6, 1e-6, 1e-6, 1e-4, 1e-4, 1e-4).finished());
+            noiseModel::Diagonal::shared_ptr odometryNoise = noiseModel::Diagonal::Variances((gtsam::Vector(6) << 1e-6, 1e-6, 1e-6, 1e-1, 1e-1, 1e-1).finished());
             gtsam::Pose3 poseFrom = pclPointTogtsamPose3(cloudKeyPoses6D->points.back());
             gtsam::Pose3 poseTo   = trans2gtsamPose(transformTobeMapped);
             mtxGraph.lock();
@@ -1797,7 +2008,7 @@ public:
         else
         {
             // 运动一段距离后再使用GPS去估计方向
-            if (common_lib_->pointDistance(cloudKeyPoses3D->front(), cloudKeyPoses3D->back()) < 10.0)
+            if (common_lib_->pointDistance(cloudKeyPoses3D->front(), cloudKeyPoses3D->back()) < 20.0)
                 return;
         }
         // std::cout << "poseCovariance:  " << poseCovariance(3,3) << " " << poseCovariance(4,4) << std::endl;
@@ -1848,7 +2059,7 @@ public:
                     gps_z = transformTobeMapped[5];
                     noise_z = 0.01;
                 }
-                // std::cout << "GPS Factor Added: " << gps_x << " " << gps_y << " " << gps_z << std::endl;
+                std::cout << "GPS Factor Added: " << gps_x << " " << gps_y << " " << gps_z << std::endl;
 
                 // GPS not properly initialized (0,0,0)
                 if (abs(gps_x) < 1e-6 && abs(gps_y) < 1e-6)
@@ -1875,7 +2086,7 @@ public:
                 gtSAMgraph.add(gps_factor);
                 mtxGraph.unlock();
                 // ROS_WARN("GPS factors added");
-                // std::cout << "GPS Factor Added noise: " << Vector3.transpose() << std::endl;
+                std::cout << "GPS Factor Added noise: " << Vector3.transpose() << std::endl;
 
                 aLoopIsClosed = true;
                 break;

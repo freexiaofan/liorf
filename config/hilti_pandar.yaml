@@ -3,9 +3,11 @@ liorf:
   # Topics
   pointCloudTopic: "/lidar_points"               # Point cloud data
   imuTopic: "/lidar_imu"
+  # imuTopic: "/imu"
 
   odomTopic: "odometry/imu"                   # IMU pre-preintegration odometry, same frequency as IMU
-  gpsTopic: "/gps/fix"                   # GPS odometry topic from navsat, see module_navsat.launch file
+  gpsTopic: "/gps/fix11"                   # GPS odometry topic from navsat, see module_navsat.launch file
+  chcnavTopic: "/chcnav/devpvt"               # GPS raw data topic from CHC Navigation receiver
 
   # Frames
   lidarFrame: "base_link"
@@ -19,7 +21,7 @@ liorf:
   useGpsElevation: true                      # if GPS elevation is bad, set to "false"
   gpsCovThreshold: 2.0                        # m^2, threshold for using GPS data
   poseCovThreshold: 25.0                       # m^2, threshold for using GPS data
-  gpsDistance: 1.0                             # meters,   add gps factor when moved more than this value
+  gpsDistance: 0.20                             # meters,   add gps factor when moved more than this value
 
   # Export settings
   savePCD: true                              # https://github.com/TixiaoShan/LIO-SAM/issues/3
@@ -31,7 +33,7 @@ liorf:
   N_SCAN: 128                                  # number of lidar channel (i.e., Velodyne/Ouster: 16, 32, 64, 128, Livox Horizon: 6)
   Horizon_SCAN: 2000                          # lidar horizontal resolution (Velodyne:1800, Ouster:512,1024,2048, Livox Horizon: 4000)
   downsampleRate: 1                           # default: 1. Downsample your data if too many points. i.e., 16 = 64 / 4, 16 = 16 / 1
-  point_filter_num: 1
+  point_filter_num: 2
   lidarMinRange: 3.0                       # default: 1.0, minimum lidar range to be used
   lidarMaxRange: 100.0                       # default: 1000.0, maximum lidar range to be used
   debugGps: false
