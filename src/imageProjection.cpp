@@ -632,7 +632,7 @@ public:
         // ROS_WARN("Saved full cloud to: %s with %d points", filename.str().c_str(), temp_Cloud.size());
         temp_Cloud->height = 1;
         temp_Cloud->width = temp_Cloud->points.size();
-        // pcl::io::savePCDFileASCII(filename.str(), temp_Cloud);
+        // pcl::io::savePCDFileASCII(filename.str(), *temp_Cloud);
         temp_Cloud->clear();
     }
 };

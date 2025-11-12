@@ -178,8 +178,8 @@ public:
 
     // scancontext loop closure
     SCManager scManager;
-    std::ofstream tumTrajectoryFile;
-    std::ofstream gpsTrajectoryFile; // For GPS trans_local_ TUM format output
+    // std::ofstream tumTrajectoryFile;
+    // std::ofstream gpsTrajectoryFile; // For GPS trans_local_ TUM format output
 
     mapOptimization()
     {
@@ -218,22 +218,22 @@ public:
         downSizeFilterICP.setLeafSize(loopClosureICPSurfLeafSize, loopClosureICPSurfLeafSize, loopClosureICPSurfLeafSize);
         downSizeFilterSurroundingKeyPoses.setLeafSize(surroundingKeyframeDensity, surroundingKeyframeDensity, surroundingKeyframeDensity); // for surrounding key poses of scan-to-map optimization
         // Open TUM trajectory file
-        std::string tumFileName = savePCDDirectory + "/lio_sam_6axis_trajectory.tum";
-        tumTrajectoryFile.open(tumFileName);
-        if (tumTrajectoryFile.is_open()) {
-            ROS_INFO("TUM trajectory file opened: %s", tumFileName.c_str());
-        } else {
-            ROS_ERROR("Failed to open TUM trajectory file: %s", tumFileName.c_str());
-        }
+        // std::string tumFileName = savePCDDirectory + "/lio_sam_6axis_trajectory.tum";
+        // tumTrajectoryFile.open(tumFileName);
+        // if (tumTrajectoryFile.is_open()) {
+        //     ROS_INFO("TUM trajectory file opened: %s", tumFileName.c_str());
+        // } else {
+        //     ROS_ERROR("Failed to open TUM trajectory file: %s", tumFileName.c_str());
+        // }
         
         // Open GPS trajectory file for trans_local_ output
-        std::string gpsFileName = savePCDDirectory + "/gps_trans_local_trajectory.tum";
-        gpsTrajectoryFile.open(gpsFileName);
-        if (gpsTrajectoryFile.is_open()) {
-            ROS_INFO("GPS trans_local_ trajectory file opened: %s", gpsFileName.c_str());
-        } else {
-            ROS_ERROR("Failed to open GPS trans_local_ trajectory file: %s", gpsFileName.c_str());
-        }
+        // std::string gpsFileName = savePCDDirectory + "/gps_trans_local_trajectory.tum";
+        // gpsTrajectoryFile.open(gpsFileName);
+        // if (gpsTrajectoryFile.is_open()) {
+        //     ROS_INFO("GPS trans_local_ trajectory file opened: %s", gpsFileName.c_str());
+        // } else {
+        //     ROS_ERROR("Failed to open GPS trans_local_ trajectory file: %s", gpsFileName.c_str());
+        // }
         
         // Initialize UTM projection variables
         utm_initialized_ = false;
@@ -414,14 +414,14 @@ public:
         }
 
         // Write trans_local_ to TUM format file for testing
-        if (gpsTrajectoryFile.is_open()) {
-            double timestamp = gpsMsg->header.stamp.toSec();
-            gpsTrajectoryFile << std::fixed << std::setprecision(6) << timestamp << " "
-                             << std::setprecision(9) 
-                             << trans_local_[0] << " " << trans_local_[1] << " " << trans_local_[2] << " "
-                             << "0.0 0.0 0.0 1.0" << std::endl; // quaternion identity for GPS positions
-            gpsTrajectoryFile.flush(); // Ensure data is written immediately
-        }
+        // if (gpsTrajectoryFile.is_open()) {
+        //     double timestamp = gpsMsg->header.stamp.toSec();
+        //     gpsTrajectoryFile << std::fixed << std::setprecision(3) << timestamp << " "
+        //                      << std::setprecision(6) 
+        //                      << trans_local_[0] << " " << trans_local_[1] << " " << trans_local_[2] << " "
+        //                      << "0.0 0.0 0.0 1.0" << std::endl; // quaternion identity for GPS positions
+        //     gpsTrajectoryFile.flush(); // Ensure data is written immediately
+        // }
 
         nav_msgs::Odometry gps_odom;
         gps_odom.header = gpsMsg->header;
@@ -490,15 +490,15 @@ public:
             }
         }
 
-        // Write trans_local_ to TUM format file for testing
-        if (gpsTrajectoryFile.is_open()) {
-            double timestamp = gpsMsg->header.stamp.toSec();
-            gpsTrajectoryFile << std::fixed << std::setprecision(6) << timestamp << " "
-                             << std::setprecision(9) 
-                             << trans_local_[0] << " " << trans_local_[1] << " " << trans_local_[2] << " "
-                             << "0.0 0.0 0.0 1.0" << std::endl; // quaternion identity for GPS positions
-            gpsTrajectoryFile.flush(); // Ensure data is written immediately
-        }
+        // // Write trans_local_ to TUM format file for testing
+        // if (gpsTrajectoryFile.is_open()) {
+        //     double timestamp = gpsMsg->header.stamp.toSec();
+        //     gpsTrajectoryFile << std::fixed << std::setprecision(6) << timestamp << " "
+        //                      << std::setprecision(9) 
+        //                      << trans_local_[0] << " " << trans_local_[1] << " " << trans_local_[2] << " "
+        //                      << "0.0 0.0 0.0 1.0" << std::endl; // quaternion identity for GPS positions
+        //     gpsTrajectoryFile.flush(); // Ensure data is written immediately
+        // }
         
         // // Debug output for UTM conversion
         // static int gps_count = 0;
@@ -643,6 +643,13 @@ public:
     bool saveMapService(liorf::save_mapRequest& req, liorf::save_mapResponse& res)
     {
       string saveMapDirectory;
+      cout << "****************************************************" << endl;
+      cout << "Optimizing pose graph ..." << endl;
+      isam->update(gtSAMgraph, initialEstimate);
+      isam->update();
+      isam->update();
+      isam->update();
+      cout << "Optimizing pose graph end..." << endl;
 
       cout << "****************************************************" << endl;
       cout << "Saving map to pcd files ..." << endl;
@@ -693,34 +700,31 @@ public:
     //   cout << "Saving map to pcd files completed\n"           << endl;
 
       // save trajectory in TUM format: timestamp tx ty tz qx qy qz qw
-      std::ofstream tumTrajectoryFile(saveMapDirectory + "/geo_trajectory.tum");
-      if (tumTrajectoryFile.is_open())
+      std::ofstream tumTrajectoryFile1(saveMapDirectory + "/geo_key_pose_opt.tum");
+      if (tumTrajectoryFile1.is_open())
       {
-          cout << "Saving trajectory in TUM format..." << endl;
+          cout << "Saving trajectory in TUM format using ISAM optimized poses..." << endl;
+          
+          // Get current ISAM estimates
+          Values currentEstimate = isam->calculateEstimate();
+          
           for (int i = 0; i < (int)cloudKeyPoses6D->size(); i++)
           {
-              PointTypePose thisPose6D = cloudKeyPoses6D->points[i];
+              // Get timestamp from original pose
+              double timestamp = cloudKeyPoses6D->points[i].time;
 
-              // Extract timestamp, position and orientation
-              double timestamp = thisPose6D.time;
-              double tx = thisPose6D.x;
-              double ty = thisPose6D.y;
-              double tz = thisPose6D.z;
-
-              // Convert roll, pitch, yaw to quaternion
-              double roll = thisPose6D.roll;
-              double pitch = thisPose6D.pitch;
-              double yaw = thisPose6D.yaw;
-
-              tf::Quaternion q = tf::createQuaternionFromRPY(roll, pitch, yaw);
+              // Get optimized pose from ISAM
+              Pose3 optimizedPose = currentEstimate.at<Pose3>(i);
+              Vector3 translation = optimizedPose.translation();
+              gtsam::Quaternion rotation = optimizedPose.rotation().toQuaternion();
 
               // Write in TUM format: timestamp tx ty tz qx qy qz qw
-              tumTrajectoryFile << std::fixed << std::setprecision(6) << timestamp << " "
-                                << std::setprecision(9) << tx << " " << ty << " " << tz << " "
-                                << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << std::endl;
+              tumTrajectoryFile1 << std::fixed << std::setprecision(3) << timestamp << " "
+                                << std::setprecision(6) << translation.x() << " " << translation.y() << " " << translation.z() << " "
+                                << rotation.x() << " " << rotation.y() << " " << rotation.z() << " " << rotation.w() << std::endl;
           }
-          tumTrajectoryFile.close();
-          cout << "TUM trajectory saved to: " << saveMapDirectory << "/geo_trajectory.tum" << endl;
+          tumTrajectoryFile1.close();
+          cout << "TUM trajectory saved using ISAM optimized poses to: " << saveMapDirectory << "/geo_trajectory.tum" << endl;
       }
       else
       {
@@ -880,6 +884,16 @@ public:
             if (detectLoopClosureDistance(&loopKeyCur, &loopKeyPre) == false)
                 return;
 
+        static int flag_loop_key_now = 0;
+        if ( std::abs(flag_loop_key_now - loopKeyCur) > 10 )
+        {
+            flag_loop_key_now = loopKeyCur;
+        }
+        else
+        {
+            ROS_WARN("========== keep loop key not be too close. so return ========================");
+            return;
+        }
         // Get positions and calculate distance between loop keys
         if (loopKeyCur >= 0 && loopKeyCur < copy_cloudKeyPoses6D->size() && 
             loopKeyPre >= 0 && loopKeyPre < copy_cloudKeyPoses6D->size()) {
@@ -926,7 +940,6 @@ public:
                       loopKeyCur, loopKeyPre, copy_cloudKeyPoses6D->size());
         }
 
-        static int flag_loop_key_now = 0;
 
         Eigen::Matrix4d initial_guess = Eigen::Matrix4d::Identity();
         // use the estimated transform from copy_cloudKeyPoses6D as initial guess
@@ -1061,19 +1074,8 @@ public:
         gtsam::Pose3 poseTo = pclPointTogtsamPose3(copy_cloudKeyPoses6D->points[loopKeyPre]);
         gtsam::Vector Vector6(6);
         float noiseScore = icp.getFitnessScore();
-        Vector6 << noiseScore, noiseScore, noiseScore, noiseScore, noiseScore, noiseScore;
+        Vector6 << noiseScore*noiseScore, noiseScore*noiseScore, noiseScore*noiseScore, noiseScore, noiseScore, noiseScore;
         noiseModel::Diagonal::shared_ptr constraintNoise = noiseModel::Diagonal::Variances(Vector6);
-
-
-        if ( std::abs(flag_loop_key_now - loopKeyCur) > 10 )
-        {
-            flag_loop_key_now = loopKeyCur;
-        }
-        else
-        {
-            ROS_WARN("========== keep loop key not be too close. so return ========================");
-            return;
-        }
 
         // Add pose constraint
         mtx.lock();
@@ -1091,7 +1093,7 @@ public:
     {
         if (cloudKeyPoses3D->points.empty() == true)
             return;
-        ROS_WARN("performSCLoopClosure.");
+        // ROS_WARN("performSCLoopClosure.");
 
         mtx.lock();
         *copy_cloudKeyPoses3D = *cloudKeyPoses3D;
@@ -1987,7 +1989,20 @@ public:
             gtSAMgraph.add(PriorFactor<Pose3>(0, trans2gtsamPose(transformTobeMapped), priorNoise));
             initialEstimate.insert(0, trans2gtsamPose(transformTobeMapped));
         }else{
-            noiseModel::Diagonal::shared_ptr odometryNoise = noiseModel::Diagonal::Variances((gtsam::Vector(6) << 1e-6, 1e-6, 1e-6, 1e-1, 1e-1, 1e-1).finished());
+            gtsam::Vector Vector6(6);
+            const double noise_std_rot = 1e-3;
+            // const double noise_std_ry = 1e-4;
+            // const double noise_std_rz = 1e-4;
+            const double noise_std_tra = 0.05;
+            // const double noise_std_ty = 0.05;
+            // const double noise_std_tz = 0.05;
+
+            Vector6 << noise_std_rot * noise_std_rot, noise_std_rot * noise_std_rot, noise_std_rot * noise_std_rot,
+                       noise_std_tra * noise_std_tra, noise_std_tra * noise_std_tra, noise_std_tra * noise_std_tra;
+            std::cout << "addOdomFactor Factor Added, noise (variances): " << Vector6.transpose() << std::endl;
+
+            // noiseModel::Diagonal::shared_ptr odometryNoise = noiseModel::Diagonal::Variances((gtsam::Vector(6) << 1e-6, 1e-6, 1e-6, 1e-4, 1e-4, 1e-4).finished());
+            noiseModel::Diagonal::shared_ptr odometryNoise = noiseModel::Diagonal::Variances( Vector6 );
             gtsam::Pose3 poseFrom = pclPointTogtsamPose3(cloudKeyPoses6D->points.back());
             gtsam::Pose3 poseTo   = trans2gtsamPose(transformTobeMapped);
             mtxGraph.lock();
@@ -2047,7 +2062,7 @@ public:
                 float noise_x = thisGPS.pose.covariance[0];
                 float noise_y = thisGPS.pose.covariance[7];
                 float noise_z = thisGPS.pose.covariance[14];
-                std::cout << "GPS original noise: " << noise_x << " " << noise_y << " " << noise_z << std::endl;
+                // std::cout << "GPS original noise: " << noise_x << " " << noise_y << " " << noise_z << std::endl;
                 if (std::fabs(noise_x) > gpsCovThreshold || std::fabs(noise_y) > gpsCovThreshold)
                     continue;
 
@@ -2079,14 +2094,14 @@ public:
 
                 gtsam::Vector Vector3(3);
                 // Vector3 << max(noise_x, 0.1f), max(noise_y, 0.1f), max(noise_z, 0.1f);
-                Vector3 << noise_x, noise_y, noise_z;
+                Vector3 << noise_x*noise_x, noise_y*noise_y, noise_z*noise_z;
                 noiseModel::Diagonal::shared_ptr gps_noise = noiseModel::Diagonal::Variances(Vector3);
                 gtsam::GPSFactor gps_factor(cloudKeyPoses3D->size(), gtsam::Point3(gps_x, gps_y, gps_z), gps_noise);
                 mtxGraph.lock();
                 gtSAMgraph.add(gps_factor);
                 mtxGraph.unlock();
                 // ROS_WARN("GPS factors added");
-                std::cout << "GPS Factor Added noise: " << Vector3.transpose() << std::endl;
+                std::cout << "GPS Factor Added noise (variances) : " << Vector3.transpose() << std::endl;
 
                 aLoopIsClosed = true;
                 break;
@@ -2106,6 +2121,10 @@ public:
             gtsam::Pose3 poseBetween = loopPoseQueue[i];
             // gtsam::noiseModel::Diagonal::shared_ptr noiseBetween = loopNoiseQueue[i];
             auto noiseBetween = loopNoiseQueue[i];
+            auto diagonalNoise = boost::dynamic_pointer_cast<gtsam::noiseModel::Diagonal>(noiseBetween);
+            gtsam::Vector sigmas = diagonalNoise->sigmas();
+            // std::cout << "Add loop ,  noise sigmas: " << sigmas.transpose() << std::endl;
+            std::cout << "Add loop , Noise (variances): " << (sigmas.array() * sigmas.array()).transpose() << std::endl; 
             mtxGraph.lock();
             gtSAMgraph.add(BetweenFactor<Pose3>(indexFrom, indexTo, poseBetween, noiseBetween));
             mtxGraph.unlock();
@@ -2195,6 +2214,16 @@ public:
 
         // save key frame cloud
         surfCloudKeyFrames.push_back(thisSurfKeyFrame);
+        
+        pcl::PointCloud<PointType>::Ptr tempFrame(new pcl::PointCloud<PointType>());
+        pcl::copyPointCloud(*laserCloudSurfLast,    *tempFrame);
+        std::stringstream filename;
+        filename << savePCDDirectory + "pcd/" << std::fixed << std::setprecision(3) << timeLaserInfoCur << ".pcd";
+        ROS_WARN("Saved full cloud to: %s with %d points", filename.str().c_str(), tempFrame->size());
+        tempFrame->height = 1;
+        tempFrame->width = tempFrame->points.size();
+        pcl::io::savePCDFileASCII(filename.str(), *tempFrame);
+        tempFrame->clear();
 
         // The following code is copy from sc-lio-sam
         // Scan Context loop detector - giseop
@@ -2289,18 +2318,18 @@ public:
         pubLaserOdometryGlobal.publish(laserOdometryROS);
         
         // Write to TUM trajectory file
-        if (tumTrajectoryFile.is_open()) {
-            tumTrajectoryFile << std::fixed << std::setprecision(3)
-                              << laserOdometryROS.header.stamp.toSec() << " "
-                              << laserOdometryROS.pose.pose.position.x << " "
-                              << laserOdometryROS.pose.pose.position.y << " "
-                              << laserOdometryROS.pose.pose.position.z << " "
-                              << std::setprecision(6)
-                              << laserOdometryROS.pose.pose.orientation.x << " "
-                              << laserOdometryROS.pose.pose.orientation.y << " "
-                              << laserOdometryROS.pose.pose.orientation.z << " "
-                              << laserOdometryROS.pose.pose.orientation.w << std::endl;
-        }
+        // if (tumTrajectoryFile.is_open()) {
+        //     tumTrajectoryFile << std::fixed << std::setprecision(3)
+        //                       << laserOdometryROS.header.stamp.toSec() << " "
+        //                       << laserOdometryROS.pose.pose.position.x << " "
+        //                       << laserOdometryROS.pose.pose.position.y << " "
+        //                       << laserOdometryROS.pose.pose.position.z << " "
+        //                       << std::setprecision(6)
+        //                       << laserOdometryROS.pose.pose.orientation.x << " "
+        //                       << laserOdometryROS.pose.pose.orientation.y << " "
+        //                       << laserOdometryROS.pose.pose.orientation.z << " "
+        //                       << laserOdometryROS.pose.pose.orientation.w << std::endl;
+        // }
 
         // Publish TF
         static tf::TransformBroadcaster br;

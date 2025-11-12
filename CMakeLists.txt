@@ -141,3 +141,26 @@ target_link_libraries(${PROJECT_NAME}_imuPreintegration Boost::timer ${catkin_LI
         )
 
 
+# G2O Optimizer
+add_executable(${PROJECT_NAME}_g2o_optimizer src/g2o_optimizer.cpp)
+add_dependencies(${PROJECT_NAME}_g2o_optimizer ${catkin_EXPORTED_TARGETS} ${PROJECT_NAME}_generate_messages_cpp)
+target_link_libraries(${PROJECT_NAME}_g2o_optimizer ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} 
+        gtsam
+        /usr/local/lib/libtbb.so
+        /usr/local/lib/libtbbmalloc.so
+        /usr/local/lib/libtbbmalloc_proxy.so
+        ${GeographicLib_LIBRARIES}
+)
+
+
+
+add_executable(${PROJECT_NAME}_Pose3SLAMExample_g2o src/Pose3SLAMExample_g2o.cpp)
+add_dependencies(${PROJECT_NAME}_Pose3SLAMExample_g2o ${catkin_EXPORTED_TARGETS} ${PROJECT_NAME}_generate_messages_cpp)
+target_link_libraries(${PROJECT_NAME}_Pose3SLAMExample_g2o ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} 
+        gtsam
+        /usr/local/lib/libtbb.so
+        /usr/local/lib/libtbbmalloc.so
+        /usr/local/lib/libtbbmalloc_proxy.so
+        ${GeographicLib_LIBRARIES}
+)
+
