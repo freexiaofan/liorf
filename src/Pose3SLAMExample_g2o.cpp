@@ -21,13 +21,93 @@
 #include <gtsam/slam/dataset.h>
 #include <gtsam/slam/BetweenFactor.h>
 #include <gtsam/nonlinear/GaussNewtonOptimizer.h>
+#include <gtsam/inference/Symbol.h>
 #include <fstream>
 #include <iomanip>
 #include <map>
 #include <sstream>
+#include <ros/ros.h>
 
 using namespace std;
 using namespace gtsam;
+
+// Function to apply trajectory smoothing
+Values smoothTrajectory(const Values& input_poses, double smoothing_factor = 0.1) {
+    cout << "Applying trajectory smoothing..." << endl;
+    Values smoothed = input_poses;
+    
+    // Get sorted poses
+    vector<pair<Key, Pose3>> sorted_poses;
+    for (const auto& key_value : input_poses) {
+        if (input_poses.exists<Pose3>(key_value.key)) {
+            sorted_poses.push_back({key_value.key, input_poses.at<Pose3>(key_value.key)});
+        }
+    }
+    sort(sorted_poses.begin(), sorted_poses.end(), 
+         [](const pair<Key, Pose3>& a, const pair<Key, Pose3>& b) {
+             return a.first < b.first;
+         });
+    
+    if (sorted_poses.size() < 3) return smoothed;
+    
+    // Apply smoothing (skip first and last pose)
+    for (size_t i = 1; i < sorted_poses.size() - 1; i++) {
+        Pose3 prev = sorted_poses[i-1].second;
+        Pose3 curr = sorted_poses[i].second;
+        Pose3 next = sorted_poses[i+1].second;
+        
+        // Smooth translation
+        Vector3 prev_trans = prev.translation();
+        Vector3 curr_trans = curr.translation();
+        Vector3 next_trans = next.translation();
+        Vector3 smoothed_trans = curr_trans + smoothing_factor * 
+            ((prev_trans + next_trans) / 2.0 - curr_trans);
+        
+        // Keep original rotation for now (rotation smoothing is more complex)
+        Pose3 smoothed_pose(curr.rotation(), smoothed_trans);
+        smoothed.update(sorted_poses[i].first, smoothed_pose);
+    }
+    
+    cout << "Trajectory smoothing complete." << endl;
+    return smoothed;
+}
+
+// Function to check trajectory consistency
+void checkTrajectoryConsistency(const gtsam::Values& result) {
+    std::vector<std::pair<uint64_t, gtsam::Pose3>> trajectory;
+    
+    // Collect all poses
+    for (const auto& key_value : result) {
+        if (gtsam::Symbol(key_value.key).chr() == 'x') {
+            uint64_t key = key_value.key;
+            gtsam::Pose3 pose = result.at<gtsam::Pose3>(key);
+            trajectory.push_back(std::make_pair(key, pose));
+        }
+    }
+    
+    // Sort by key to ensure chronological order (sort only by key, not pose)
+    std::sort(trajectory.begin(), trajectory.end(), 
+              [](const std::pair<uint64_t, gtsam::Pose3>& a, const std::pair<uint64_t, gtsam::Pose3>& b) {
+                  return a.first < b.first;
+              });
+    
+    for (size_t i = 1; i < trajectory.size(); ++i) {
+        gtsam::Pose3 prev = trajectory[i-1].second;
+        gtsam::Pose3 curr = trajectory[i].second;
+        
+        // Calculate distance between translation vectors
+        gtsam::Point3 diff = curr.translation() - prev.translation();
+        double trans_step = diff.norm();
+        
+        // Check for large jumps that might cause ghosting
+        if (trans_step > 10.0) {  // 10 meter threshold
+            ROS_WARN("Large trajectory jump detected between pose %lu and %lu: %.2f meters", 
+                     gtsam::Symbol(trajectory[i-1].first).index(), 
+                     gtsam::Symbol(trajectory[i].first).index(), 
+                     trans_step);
+        }
+    }
+}
 
 // Function to read timestamps from TUM file
 map<Key, double> readTUMTimestamps(const string& tumFile) {
@@ -75,8 +155,8 @@ bool saveTUMTrajectory(const Values& values, const string& filename, const map<K
     }
     
     // Write TUM format header
-    file << "# TUM trajectory format" << endl;
-    file << "# timestamp tx ty tz qx qy qz qw" << endl;
+    // file << "# TUM trajectory format" << endl;
+    // file << "# timestamp tx ty tz qx qy qz qw" << endl;
     
     // Sort poses by key for consistent output
     map<Key, Pose3> sorted_poses;
@@ -121,30 +201,69 @@ bool saveTUMTrajectory(const Values& values, const string& filename, const map<K
     return true;
 }
 
-int main(const int argc, const char* argv[]) {
+int main(int argc, char** argv) {
+  // Initialize ROS for parameter reading
+  ros::init(argc, argv, "pose3_slam_g2o");
+  ros::NodeHandle nh;
+  ros::NodeHandle pnh("~");
+
+    // 获取参数
+    std::string input_g2o_file, output_g2o_file, output_tum_file,input_tum_file;
+    std::string optimization_method;
+    pnh.param<std::string>("input_g2o_file", input_g2o_file, "/mnt/nvme0n1p2/data/data_liorf1/graph.g2o");
+    pnh.param<std::string>("output_g2o_file", output_g2o_file, "/mnt/nvme0n1p2/data/data_liorf1/graph_opt.g2o");
+
+    pnh.param<std::string>("input_tum_file", input_tum_file, "/mnt/nvme0n1p2/data/data_liorf1/geo_key_pose_opt.tum");
+    pnh.param<std::string>("output_tum_file", output_tum_file, "/mnt/nvme0n1p2/data/data_liorf1/graph_opt_trajectory.tum");
+    pnh.param<std::string>("optimization_method", optimization_method, "ISAM2"); // "LM" or "ISAM2"
+
   // Check arguments
-  if (argc < 2) {
-    cout << "Usage: " << argv[0] << " input.g2o output.g2o [timestamps.tum]" << endl;
-    cout << "  input.g2o      - Input g2o graph file" << endl;
-    cout << "  output.g2o     - Output optimized g2o file" << endl;
-    cout << "  timestamps.tum - Optional TUM file with timestamps to use in output" << endl;
-    // /home/tyjt/Desktop/ros_ws/devel/lib/liorf/liorf_Pose3SLAMExample_g2o  /mnt/nvme0n1p2/data/data_liorf/graph.g2o /mnt/nvme0n1p2/data/data_liorf/graph_opt.g2o   /mnt/nvme0n1p2/data/data_liorf/geo_key_pose_opt.tum
-    return -1;
+    std::cout << "=== G2O File Optimizer ===" << std::endl;
+    std::cout << "Input g2o file: " << input_g2o_file << std::endl;
+    std::cout << "Output g2o file: " << output_g2o_file << std::endl;
+    std::cout << "input_tum_file TUM file: " << input_tum_file << std::endl;
+    std::cout << "Output TUM file: " << output_tum_file << std::endl;
+    std::cout << "Optimization method: " << optimization_method << std::endl;
+    std::cout << "==========================\n" << std::endl;
+
+  // Read optimization parameters
+  int max_iterations;
+  double relative_error_tol, absolute_error_tol, smoothing_factor;
+  std::string verbosity;
+  bool enable_smoothing, enable_multi_stage;
+  
+  pnh.param<int>("max_iterations", max_iterations, 100);
+  pnh.param<double>("relative_error_tol", relative_error_tol, 1e-5);
+  pnh.param<double>("absolute_error_tol", absolute_error_tol, 1e-5);
+  pnh.param<std::string>("verbosity", verbosity, "TERMINATION");
+  pnh.param<bool>("enable_smoothing", enable_smoothing, true);
+  pnh.param<bool>("enable_multi_stage", enable_multi_stage, true);
+  pnh.param<double>("smoothing_factor", smoothing_factor, 0.1);
+
+  cout << "=== Optimization Parameters ===" << endl;
+  cout << "Max iterations: " << max_iterations << endl;
+  cout << "Relative error tolerance: " << relative_error_tol << endl;
+  cout << "Absolute error tolerance: " << absolute_error_tol << endl;
+  cout << "Verbosity: " << verbosity << endl;
+  cout << "Multi-stage optimization: " << (enable_multi_stage ? "ON" : "OFF") << endl;
+  cout << "Trajectory smoothing: " << (enable_smoothing ? "ON" : "OFF") << endl;
+  if (enable_smoothing) {
+    cout << "Smoothing factor: " << smoothing_factor << endl;
   }
+  cout << "===============================" << endl;
   
 
   // Read graph from file
-  string g2oFile = argv[1];
 
   NonlinearFactorGraph::shared_ptr graph;
   Values::shared_ptr initial;
   bool is3D = true;
-  boost::tie(graph, initial) = readG2o(g2oFile, is3D);
+  boost::tie(graph, initial) = readG2o(input_g2o_file, is3D);
 
   // Add strong prior on the first key to prevent it from moving during optimization
   // Using very small variances to effectively fix the first pose
   auto priorModel = noiseModel::Diagonal::Variances(
-      (Vector(6) << 1e-12, 1e-12, 1e-12, 1e-12, 1e-12, 1e-12).finished());
+      (Vector(6) << 1e-6, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6).finished());
   Key firstKey = 0;
   Pose3 firstPose;
   for (const auto key_value : *initial) {
@@ -158,15 +277,72 @@ int main(const int argc, const char* argv[]) {
     break;
   }
 
-  std::cout << "Optimizing the factor graph" << std::endl;
-  GaussNewtonParams params;
-  params.setVerbosity("TERMINATION");  //  show info about stopping conditions
-  GaussNewtonOptimizer optimizer(*graph, *initial, params);
-  Values result = optimizer.optimize();
-  std::cout << "Optimization complete" << std::endl;
+  Values result;
+  
+  if (enable_multi_stage) {
+    std::cout << "=== Multi-Stage Optimization for High Precision ===" << std::endl;
+    
+    // Stage 1: Initial optimization with relaxed settings
+    std::cout << "Stage 1: Initial optimization..." << std::endl;
+    GaussNewtonParams params1;
+    params1.setVerbosity("TERMINATION");
+    params1.setMaxIterations(max_iterations / 2);
+    params1.setRelativeErrorTol(relative_error_tol * 10);
+    params1.setAbsoluteErrorTol(absolute_error_tol * 10);
+    
+    GaussNewtonOptimizer optimizer1(*graph, *initial, params1);
+    Values result1 = optimizer1.optimize();
+    std::cout << "Stage 1 error: " << graph->error(result1) << std::endl;
+    
+    // Stage 2: Fine-tuning with strict settings
+    std::cout << "Stage 2: Fine-tuning optimization..." << std::endl;
+    GaussNewtonParams params2;
+    params2.setVerbosity(verbosity);
+    params2.setMaxIterations(max_iterations);
+    params2.setRelativeErrorTol(relative_error_tol);
+    params2.setAbsoluteErrorTol(absolute_error_tol);
+    
+    GaussNewtonOptimizer optimizer2(*graph, result1, params2);
+    Values result2 = optimizer2.optimize();
+    std::cout << "Stage 2 error: " << graph->error(result2) << std::endl;
+    
+    // Stage 3: Ultra-fine optimization for precision
+    std::cout << "Stage 3: Ultra-precision optimization..." << std::endl;
+    GaussNewtonParams params3;
+    params3.setVerbosity("ERROR");
+    params3.setMaxIterations(max_iterations / 2);
+    params3.setRelativeErrorTol(relative_error_tol / 10);
+    params3.setAbsoluteErrorTol(absolute_error_tol / 10);
+    
+    GaussNewtonOptimizer optimizer3(*graph, result2, params3);
+    result = optimizer3.optimize();
+    std::cout << "=== Multi-Stage Optimization Complete ===" << std::endl;
+  } else {
+    std::cout << "=== Single-Stage Optimization ===" << std::endl;
+    GaussNewtonParams params;
+    params.setVerbosity(verbosity);
+    params.setMaxIterations(max_iterations);
+    params.setRelativeErrorTol(relative_error_tol);
+    params.setAbsoluteErrorTol(absolute_error_tol);
+    
+    GaussNewtonOptimizer optimizer(*graph, *initial, params);
+    result = optimizer.optimize();
+    std::cout << "=== Single-Stage Optimization Complete ===" << std::endl;
+  }
+  
+  std::cout << "Final optimization error: " << graph->error(result) << std::endl;
 
   std::cout << "initial error=" << graph->error(*initial) << std::endl;
   std::cout << "final error=" << graph->error(result) << std::endl;
+  
+  // Apply post-processing
+  checkTrajectoryConsistency(result);
+  
+  if (enable_smoothing) {
+    Values smoothed_result = smoothTrajectory(result, smoothing_factor);
+    std::cout << "After smoothing error=" << graph->error(smoothed_result) << std::endl;
+    result = smoothed_result;
+  }
 
   // Verify first pose hasn't moved
   if (result.exists(firstKey)) {
@@ -184,29 +360,21 @@ int main(const int argc, const char* argv[]) {
     std::cout << "Rotation trace difference: " << rotation_diff << std::endl;
     std::cout << "First pose " << (translation_diff < 1e-10 ? "successfully fixed" : "moved during optimization") << std::endl;
     std::cout << "==============================\n" << std::endl;
-  }
-
-  if (argc < 3) {
-    result.print("result");
-  } else {
-    const string outputFile = argv[2];
-    std::cout << "Writing results to file: " << outputFile << std::endl;
+ 
+    std::cout << "Writing results to file: " << output_g2o_file << std::endl;
     
     // Write the complete graph (including constraints) with optimized values
     std::cout << "Including " << graph->size() << " factors (constraints + priors) in output" << std::endl;
-    writeG2o(*graph, result, outputFile);
-    std::cout << "Successfully written optimized graph with all constraints to: " << outputFile << std::endl;
+    writeG2o(*graph, result, output_g2o_file);
+    std::cout << "Successfully written optimized graph with all constraints to: " << output_g2o_file << std::endl;
     
     // Read timestamps from TUM file if provided
     map<Key, double> external_timestamps;
-    if (argc >= 4) {
-        string timestampFile = argv[3];
-        std::cout << "Reading timestamps from: " << timestampFile << std::endl;
-        external_timestamps = readTUMTimestamps(timestampFile);
-    }
-    
+    std::cout << "Reading timestamps from: " << input_tum_file << std::endl;
+    external_timestamps = readTUMTimestamps(input_tum_file);
+
     // Save TUM trajectory with timestamps
-    string tumFile = outputFile.substr(0, outputFile.find_last_of('.')) + "_trajectory.tum";
+    string tumFile = output_g2o_file.substr(0, output_g2o_file.find_last_of('.')) + "_trajectory.tum";
     if (saveTUMTrajectory(result, tumFile, external_timestamps)) {
         std::cout << "TUM trajectory saved to: " << tumFile << std::endl;
         if (!external_timestamps.empty()) {
