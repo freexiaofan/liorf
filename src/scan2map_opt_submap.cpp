@@ -172,15 +172,15 @@ public:
         
         // Set voxel grid parameters
         // downSizeFilterScan.setLeafSize(0.1, 0.1, 0.1);
-        // downSizeFilterMap.setLeafSize(0.2, 0.2, 0.2);
+        // downSizeFilterMap.setLeafSize(0.1, 0.1, 0.1);
         downSizeFilterScan.setLeafSize(0.2, 0.2, 0.2);
-        downSizeFilterMap.setLeafSize(0.5, 0.5, 0.5);   
+        downSizeFilterMap.setLeafSize(0.4, 0.4, 0.4);   
         // Initialize parameters
-        loopClosureThreshold = 10.0;  // 5 meters
+        loopClosureThreshold = 5.0;  // 5 meters
         minLoopClosureInterval = 10;  // minimum 10 frames between loop closures
         lastLoopClosureFrame = -20;  // Initialize to allow immediate detection
         maxIterations = 30; // 30 ;
-        convergenceThreshold = 0.05;  // Relaxed: 0.05 degrees and 0.05 meters for better convergence
+        convergenceThreshold = 1.0;  // Relaxed: 0.05 degrees and 0.05 c meters for better convergence
         submapRadius = 5.0;  // 10 meters
         planeValidThreshold = 0.1;   // Relaxed: 0.08m for more plane matches
         maxCorrespondenceDistance = 1.2; // Relaxed: 1.2m for more correspondences
@@ -376,7 +376,8 @@ public:
             addFrameToGlobalMap();
             
             // Check for loop closures
-            detectLoopClosures();
+
+            // detectLoopClosures();
             
             // Perform global optimization if loop closure detected
             if (!loopClosures.empty() && 
@@ -496,17 +497,12 @@ private:
         for (int i = 0; i < globalMap->points.size(); ++i) {
             const PointType& point = globalMap->points[i];
 
-            if(std::fabs(point.x - currentPos.x()) < effectiveRadius
-               && std::fabs(point.y - currentPos.y()) < effectiveRadius)
+            if(std::fabs(point.x - currentPos.x()) < effectiveRadius * 1.25
+               && std::fabs(point.y - currentPos.y()) < effectiveRadius * 1.25)
                {
                 inliers->indices.push_back(i);
                }
-            // double distance = sqrt(pow(point.x - currentPos.x(), 2) + 
-            //                      pow(point.y - currentPos.y(), 2) + 
-            //                      pow(point.z - currentPos.z(), 2));
-            // if (distance <= effectiveRadius) {
-            //     inliers->indices.push_back(i);
-            // }
+ 
         }
         
         // Extract points within radius
@@ -534,6 +530,84 @@ private:
     }
     
     /**
+     * Smart submap construction based on nearest 10 keyframes
+     * Finds the 10 keyframes closest to current position and builds submap from them
+     */
+    void buildSmartSubmap_withlast10keyframe()
+    {
+        Point3 currentPos = optimizedPoses[currentFrameId].translation();
+        
+        ROS_INFO("Building smart submap based on nearest 10 keyframes around position [%.1f, %.1f, %.1f]", 
+                 currentPos.x(), currentPos.y(), currentPos.z());
+        
+        smartSubmap->clear();
+        
+        // Calculate distances to all previous frames
+        std::vector<std::pair<double, int>> frameDistances;
+        for (int i = 0; i < currentFrameId; ++i) {
+            Point3 framePos = optimizedPoses[i].translation();
+            double distance = (currentPos - framePos).norm();
+            frameDistances.push_back(std::make_pair(distance, i));
+        }
+        
+        // Sort by distance to find nearest frames
+        std::sort(frameDistances.begin(), frameDistances.end());
+        
+        // Select up to 10 nearest keyframes
+        int numKeyframes = std::min(10, (int)frameDistances.size());
+        std::vector<int> selectedKeyframes;
+        
+        for (int i = 0; i < numKeyframes; ++i) {
+            selectedKeyframes.push_back(frameDistances[i].second);
+        }
+        
+        ROS_INFO("Selected %d nearest keyframes for submap construction", numKeyframes);
+        
+        // Build submap from selected keyframes
+        int totalPointsAdded = 0;
+        for (int keyframeId : selectedKeyframes) {
+            // Load keyframe on demand (cached)
+            pcl::PointCloud<PointType>::Ptr keyframeCloud = getCachedPointCloud(keyframeId);
+            if (!keyframeCloud || keyframeCloud->empty()) {
+                ROS_WARN("Failed to load keyframe %d for submap construction", keyframeId);
+                continue;
+            }
+            
+            // Transform keyframe to its optimized pose
+            pcl::PointCloud<PointType>::Ptr transformedKeyframe(new pcl::PointCloud<PointType>());
+            pcl::transformPointCloud(*keyframeCloud, *transformedKeyframe, 
+                                   optimizedPoses[keyframeId].matrix().cast<float>());
+            
+            // Add transformed keyframe to submap
+            *smartSubmap += *transformedKeyframe;
+            totalPointsAdded += transformedKeyframe->size();
+            
+            // ROS_DEBUG("Added keyframe %d to submap (distance: %.2f m, points: %d)", 
+            //          keyframeId, frameDistances[std::find_if(frameDistances.begin(), frameDistances.end(),
+            //          [keyframeId](const std::pair<double, int>& p) { return p.second == keyframeId; })]->first,
+            //          (int)transformedKeyframe->size());
+        }
+        
+        ROS_INFO("Keyframe-based submap built with %d points from %d keyframes", 
+                 totalPointsAdded, numKeyframes);
+        
+        // Downsample the keyframe-based submap for efficiency
+        if (smartSubmap->size() > 0) {
+            pcl::PointCloud<PointType>::Ptr downsampledSubmap(new pcl::PointCloud<PointType>());
+            downSizeFilterMap.setInputCloud(smartSubmap);
+            downSizeFilterMap.filter(*downsampledSubmap);
+            smartSubmap = downsampledSubmap;
+            
+            ROS_INFO("Final keyframe-based submap after downsampling: %d points", 
+                     (int)smartSubmap->size());
+        }
+        
+        // Update submap management variables
+        lastSubmapCenter = currentPos;
+        submapNeedsUpdate = false;
+    }
+    
+    /**
      * Scan-to-map optimization using point-to-plane constraints
      * Based on the scan2MapOptimization() function from mapOptmization.cpp
      */
@@ -546,8 +620,10 @@ private:
         }
         
         // Build smart submap for efficient nearest neighbor search
+        // buildSmartSubmap_withlast10keyframe();
+
         buildSmartSubmap();
-        
+
         // Check if smart submap has enough points
         if (smartSubmap->size() < 5000) {
             ROS_WARN("Smart submap too small (%d points) for frame %d, using global map", 
@@ -564,7 +640,8 @@ private:
         Pose3 initialPose = initialPoses[currentFrameId];     // 初始位姿，用于异常检测和fallback
         Pose3 currentPose = optimizedPoses[currentFrameId];   // 当前优化位姿
  
-        const auto optimizationStartPose = initialPose;
+        // const auto optimizationStartPose = initialPose;
+        const auto optimizationStartPose = optimizedPoses[currentFrameId-1] * ( initialPoses[currentFrameId-1].inverse() * initialPose );
         
         auto rpy = optimizationStartPose.rotation().rpy();  
         transformTobeMapped[0] = rpy(0); // roll
@@ -605,15 +682,14 @@ private:
         for (int iterCount = 0; iterCount < maxIterations; iterCount++) {
 
             // Find point-to-plane correspondences
+            // ok 使用原始版本不动任何参数
             surfOptimization(currentFrame);
             
             // Combine optimization coefficients
-            std::vector<PointType> laserCloudOri;
-            std::vector<PointType> coeffSel;
-            combineOptimizationCoeffs(laserCloudOri, coeffSel);
+            combineOptimizationCoeffs(laserCloudOriVec, coeffSelVec);
             
             // Perform Levenberg-Marquardt optimization
-            if (LMOptimization(laserCloudOri, coeffSel, iterCount)) {
+            if (LMOptimization(iterCount)) {
                 // Converged, exit optimization loop
                 break;
             }
@@ -660,10 +736,7 @@ private:
             acceptOptimizedPose = false;
             rejectReason += "excessive rotation change (" + std::to_string(rotationChange) + "deg); ";
         }
-        
-        // if (!acceptOptimizedPose) {
-        //     ROS_ERROR("Frame %d: Rejecting optimization - %s", currentFrameId, rejectReason.c_str());
-        // }
+ 
         
         // Apply optimized pose only if it passes sanity checks
         static int init_pose_cnt = 0;
@@ -673,7 +746,9 @@ private:
             ROS_INFO("Frame %d: Optimization accepted and applied", currentFrameId);
         } else {
             // 使用初始位姿，确保该帧位置不更新
-            optimizedPoses[currentFrameId] = initialPose;
+            // optimizedPoses[currentFrameId] = initialPose;
+            optimizedPoses[currentFrameId] = optimizationStartPose;
+            
             consecutiveRejectCount++;
             ROS_ERROR("===================  %d   ==================", init_pose_cnt);
             ROS_ERROR("Frame %d: Using initial pose due to excessive optimization change (consecutive: %d)", 
@@ -713,11 +788,6 @@ private:
                  (finalRPY(2)-beforeRPY(2))*180/M_PI,
                  rotationChange);
         
-        // // Highlight yaw changes specifically
-        // if (yawChange > 1.0) {  // More than 1 degree
-        //     ROS_ERROR("*** YAW CHANGE: %.3f degrees ***", yawChange);
-        // }
-        
         // Publish keyframe submap for visualization
         publishPointCloud(pubKeyframeSubmap, smartSubmap, "map");
         
@@ -732,64 +802,69 @@ private:
  
     /**
      * Surface feature optimization (point-to-plane)
-     * Adapted from surfOptimization() in mapOptmization.cpp
+     * Restored from original mapOptmization.cpp implementation
      */
     void surfOptimization(pcl::PointCloud<PointType>::Ptr& currentScan)
     {
         updatePointAssociateToMap();
-        
-        // Decide which point cloud to use for optimization
-        pcl::PointCloud<PointType>::Ptr targetCloud;
-        if (smartSubmap->size() >= 500) {
-            targetCloud = smartSubmap;
-        } else {
-            targetCloud = globalMap;
-        }
-        
+
         #pragma omp parallel for num_threads(numberOfCores)
-        for (int i = 0; i < currentScan->size(); i++) {
-            PointType pointOri = currentScan->points[i];
-            PointType pointSel, coeff;
+        for (int i = 0; i < currentScan->size(); i++)
+        {
+            PointType pointOri, pointSel, coeff;
             std::vector<int> pointSearchInd;
             std::vector<float> pointSearchSqDis;
-            
-            // Transform point to map frame
-            pointAssociateToMap(&pointOri, &pointSel);
-            
-            // Find nearest neighbors in target cloud (smart submap or global map)
+
+            pointOri = currentScan->points[i];
+            pointAssociateToMap(&pointOri, &pointSel); 
             kdtreeSubmap->nearestKSearch(pointSel, 5, pointSearchInd, pointSearchSqDis);
-            
+
             Eigen::Matrix<float, 5, 3> matA0;
             Eigen::Matrix<float, 5, 1> matB0;
             Eigen::Vector3f matX0;
-            
+
             matA0.setZero();
             matB0.fill(-1);
             matX0.setZero();
-            
-            if (pointSearchSqDis[4] < maxCorrespondenceDistance) {
+
+            if (pointSearchSqDis[4] < 1.0) {
                 for (int j = 0; j < 5; j++) {
-                    matA0(j, 0) = targetCloud->points[pointSearchInd[j]].x;
-                    matA0(j, 1) = targetCloud->points[pointSearchInd[j]].y;
-                    matA0(j, 2) = targetCloud->points[pointSearchInd[j]].z;
+                    // Use smartSubmap if available, otherwise use globalMap
+                    if (smartSubmap->size() >= 500) {
+                        matA0(j, 0) = smartSubmap->points[pointSearchInd[j]].x;
+                        matA0(j, 1) = smartSubmap->points[pointSearchInd[j]].y;
+                        matA0(j, 2) = smartSubmap->points[pointSearchInd[j]].z;
+                    } else {
+                        matA0(j, 0) = globalMap->points[pointSearchInd[j]].x;
+                        matA0(j, 1) = globalMap->points[pointSearchInd[j]].y;
+                        matA0(j, 2) = globalMap->points[pointSearchInd[j]].z;
+                    }
                 }
-                
+
                 matX0 = matA0.colPivHouseholderQr().solve(matB0);
-                
+
                 float pa = matX0(0, 0);
                 float pb = matX0(1, 0);
                 float pc = matX0(2, 0);
                 float pd = 1;
-                
+
                 float ps = sqrt(pa * pa + pb * pb + pc * pc);
                 pa /= ps; pb /= ps; pc /= ps; pd /= ps;
-                
-                // Enhanced plane validation
+
                 bool planeValid = true;
                 for (int j = 0; j < 5; j++) {
-                    if (fabs(pa * targetCloud->points[pointSearchInd[j]].x +
-                             pb * targetCloud->points[pointSearchInd[j]].y +
-                             pc * targetCloud->points[pointSearchInd[j]].z + pd) > 0.2) {
+                    float planeDist;
+                    if (smartSubmap->size() >= 500) {
+                        planeDist = fabs(pa * smartSubmap->points[pointSearchInd[j]].x +
+                                       pb * smartSubmap->points[pointSearchInd[j]].y +
+                                       pc * smartSubmap->points[pointSearchInd[j]].z + pd);
+                    } else {
+                        planeDist = fabs(pa * globalMap->points[pointSearchInd[j]].x +
+                                       pb * globalMap->points[pointSearchInd[j]].y +
+                                       pc * globalMap->points[pointSearchInd[j]].z + pd);
+                    }
+                    
+                    if (planeDist > 0.2) {
                         planeValid = false;
                         break;
                     }
@@ -797,16 +872,16 @@ private:
 
                 if (planeValid) {
                     float pd2 = pa * pointSel.x + pb * pointSel.y + pc * pointSel.z + pd;
-                    
+
                     float s = 1 - 0.9 * fabs(pd2) / sqrt(sqrt(pointOri.x * pointOri.x
                             + pointOri.y * pointOri.y + pointOri.z * pointOri.z));
-                    
+
                     coeff.x = s * pa;
                     coeff.y = s * pb;
                     coeff.z = s * pc;
                     coeff.intensity = s * pd2;
-                    
-                    if (s > 0.1) { // Only accept reasonably weighted constraints
+
+                    if (s > 0.1) {
                         laserCloudOriVec[i] = pointOri;
                         coeffSelVec[i] = coeff;
                         pointSelFlag[i] = true;
@@ -842,16 +917,16 @@ private:
     /**
      * Combine optimization coefficients from parallel computation
      */
-    void combineOptimizationCoeffs(std::vector<PointType>& laserCloudOri, 
-                                  std::vector<PointType>& coeffSel)
+    void combineOptimizationCoeffs(std::vector<PointType>& laserCloudOriVec, 
+                                  std::vector<PointType>& coeffSelVec)
     {
-        laserCloudOri.clear();
-        coeffSel.clear();
+        laserCloudOriVec.clear();
+        coeffSelVec.clear();
         
         for (int i = 0; i < pointSelFlag.size(); ++i) {
             if (pointSelFlag[i]) {
-                laserCloudOri.push_back(laserCloudOriVec[i]);
-                coeffSel.push_back(coeffSelVec[i]);
+                laserCloudOriVec.push_back(laserCloudOriVec[i]);
+                coeffSelVec.push_back(coeffSelVec[i]);
             }
         }
         std::fill(pointSelFlag.begin(), pointSelFlag.end(), false);
@@ -861,70 +936,77 @@ private:
      * Levenberg-Marquardt optimization
      * Adapted from LMOptimization() in mapOptmization.cpp
      */
-    bool LMOptimization(const std::vector<PointType>& laserCloudOri,
-                       const std::vector<PointType>& coeffSel,
-                       int iterCount, 
-                       bool constrainYaw = false)
+
+    bool LMOptimization(int iterCount)
     {
-        float srx = sin(transformTobeMapped[0]);
-        float crx = cos(transformTobeMapped[0]);
+        // This optimization is from the original loam_velodyne by Ji Zhang, need to cope with coordinate transformation
+        // lidar <- camera      ---     camera <- lidar
+        // x = z                ---     x = y
+        // y = x                ---     y = z
+        // z = y                ---     z = x
+        // roll = yaw           ---     roll = pitch
+        // pitch = roll         ---     pitch = yaw
+        // yaw = pitch          ---     yaw = roll
+
+        // lidar -> camera
+        float srx = sin(transformTobeMapped[2]);
+        float crx = cos(transformTobeMapped[2]);
         float sry = sin(transformTobeMapped[1]);
         float cry = cos(transformTobeMapped[1]);
-        float srz = sin(transformTobeMapped[2]);
-        float crz = cos(transformTobeMapped[2]);
-        
-        int laserCloudSelNum = laserCloudOri.size();
-        
-        // Enhanced diagnostics for insufficient constraints (降低约束要求)
-        if (laserCloudSelNum < 30) {
-            ROS_WARN("Frame %d: Insufficient valid constraints (%d < 30) at iteration %d", 
-                     currentFrameId, laserCloudSelNum, iterCount);
-            
-            // If this is the first iteration and we have very few constraints, 
-            // the optimization might be in a difficult environment
-            if (iterCount == 0 && laserCloudSelNum < 10) {
-                ROS_ERROR("Frame %d: Very few constraints (%d) - possible featureless environment", 
-                          currentFrameId, laserCloudSelNum);
-            }
+        float srz = sin(transformTobeMapped[0]);
+        float crz = cos(transformTobeMapped[0]);
+
+        int laserCloudSelNum = laserCloudOriVec.size();
+        if (laserCloudSelNum < 50) {
             return false;
         }
-        
-        // Log constraint quality
-        if (iterCount == 0) {
-            ROS_INFO("Frame %d: Starting optimization with %d valid constraints", 
-                     currentFrameId, laserCloudSelNum);
-        }
-        
+
         cv::Mat matA(laserCloudSelNum, 6, CV_32F, cv::Scalar::all(0));
         cv::Mat matAt(6, laserCloudSelNum, CV_32F, cv::Scalar::all(0));
         cv::Mat matAtA(6, 6, CV_32F, cv::Scalar::all(0));
         cv::Mat matB(laserCloudSelNum, 1, CV_32F, cv::Scalar::all(0));
         cv::Mat matAtB(6, 1, CV_32F, cv::Scalar::all(0));
         cv::Mat matX(6, 1, CV_32F, cv::Scalar::all(0));
-        
+
         PointType pointOri, coeff;
-        
+
         for (int i = 0; i < laserCloudSelNum; i++) {
-            pointOri.x = laserCloudOri[i].x;
-            pointOri.y = laserCloudOri[i].y;
-            pointOri.z = laserCloudOri[i].z;
-            
-            coeff.x = coeffSel[i].x;
-            coeff.y = coeffSel[i].y;
-            coeff.z = coeffSel[i].z;
-            coeff.intensity = coeffSel[i].intensity;
-            
+            // lidar -> camera
+            pointOri.x = laserCloudOriVec[i].x;
+            pointOri.y = laserCloudOriVec[i].y;
+            pointOri.z = laserCloudOriVec[i].z;
+            // lidar -> camera
+            coeff.x = coeffSelVec[i].x;
+            coeff.y = coeffSelVec[i].y;
+            coeff.z = coeffSelVec[i].z;
+            coeff.intensity = coeffSelVec[i].intensity;
+            // in camera
+/*             float arx = (crx*sry*srz*pointOri.x + crx*crz*sry*pointOri.y - srx*sry*pointOri.z) * coeff.x
+                      + (-srx*srz*pointOri.x - crz*srx*pointOri.y - crx*pointOri.z) * coeff.y
+                      + (crx*cry*srz*pointOri.x + crx*cry*crz*pointOri.y - cry*srx*pointOri.z) * coeff.z;
+
+            float ary = ((cry*srx*srz - crz*sry)*pointOri.x 
+                      + (sry*srz + cry*crz*srx)*pointOri.y + crx*cry*pointOri.z) * coeff.x
+                      + ((-cry*crz - srx*sry*srz)*pointOri.x 
+                      + (cry*srz - crz*srx*sry)*pointOri.y - crx*sry*pointOri.z) * coeff.z;
+
+            float arz = ((crz*srx*sry - cry*srz)*pointOri.x + (-cry*crz-srx*sry*srz)*pointOri.y)*coeff.x
+                      + (crx*crz*pointOri.x - crx*srz*pointOri.y) * coeff.y
+                      + ((sry*srz + cry*crz*srx)*pointOri.x + (crz*sry-cry*srx*srz)*pointOri.y)*coeff.z;
+             */
+
             float arx = (-srx * cry * pointOri.x - (srx * sry * srz + crx * crz) * pointOri.y + (crx * srz - srx * sry * crz) * pointOri.z) * coeff.x
                       + (crx * cry * pointOri.x - (srx * crz - crx * sry * srz) * pointOri.y + (crx * sry * crz + srx * srz) * pointOri.z) * coeff.y;
-            
+
             float ary = (-crx * sry * pointOri.x + crx * cry * srz * pointOri.y + crx * cry * crz * pointOri.z) * coeff.x
                       + (-srx * sry * pointOri.x + srx * sry * srz * pointOri.y + srx * cry * crz * pointOri.z) * coeff.y
                       + (-cry * pointOri.x - sry * srz * pointOri.y - sry * crz * pointOri.z) * coeff.z;
-            
+
             float arz = ((crx * sry * crz + srx * srz) * pointOri.y + (srx * crz - crx * sry * srz) * pointOri.z) * coeff.x
                       + ((-crx * srz + srx * sry * crz) * pointOri.y + (-srx * sry * srz - crx * crz) * pointOri.z) * coeff.y
                       + (cry * crz * pointOri.y - cry * srz * pointOri.z) * coeff.z;
-            
+              
+            // camera -> lidar
             matA.at<float>(i, 0) = arz;
             matA.at<float>(i, 1) = ary;
             matA.at<float>(i, 2) = arx;
@@ -933,20 +1015,20 @@ private:
             matA.at<float>(i, 5) = coeff.z;
             matB.at<float>(i, 0) = -coeff.intensity;
         }
-        
+
         cv::transpose(matA, matAt);
         matAtA = matAt * matA;
         matAtB = matAt * matB;
         cv::solve(matAtA, matAtB, matX, cv::DECOMP_QR);
-        
+
         if (iterCount == 0) {
             cv::Mat matE(1, 6, CV_32F, cv::Scalar::all(0));
             cv::Mat matV(6, 6, CV_32F, cv::Scalar::all(0));
             cv::Mat matV2(6, 6, CV_32F, cv::Scalar::all(0));
-            
+
             cv::eigen(matAtA, matE, matV);
             matV.copyTo(matV2);
-            
+
             isDegenerate = false;
             float eignThre[6] = {100, 100, 100, 100, 100, 100};
             for (int i = 5; i >= 0; i--) {
@@ -961,84 +1043,36 @@ private:
             }
             matP = matV.inv() * matV2;
         }
-        
-        if (isDegenerate) {
+
+        if (isDegenerate)
+        {
             cv::Mat matX2(6, 1, CV_32F, cv::Scalar::all(0));
             matX.copyTo(matX2);
             matX = matP * matX2;
-            ROS_WARN("Frame %d: Degenerate case detected at iteration %d", currentFrameId, iterCount);
         }
-        
-        // Check for large updates that might indicate optimization problems
-        float deltaR = sqrt(pow(rad2deg(matX.at<float>(0, 0)), 2) +
-                           pow(rad2deg(matX.at<float>(1, 0)), 2) +
-                           pow(rad2deg(matX.at<float>(2, 0)), 2));
-        float deltaT = sqrt(pow(matX.at<float>(3, 0) * 100, 2) +
-                           pow(matX.at<float>(4, 0) * 100, 2) +
-                           pow(matX.at<float>(5, 0) * 100, 2));
-        
-        // Warn about large updates that might indicate problems
-        if (deltaR > 5.0 || deltaT > 50.0) { // 5 degrees or 0.5 meters
-            ROS_WARN("Frame %d: Large update detected - deltaR=%.2f deg, deltaT=%.2f cm (iter=%d)", 
-                     currentFrameId, deltaR, deltaT, iterCount);
-            largeUpdateCount++;  // 增加大更新计数
-        }
-        
-        // Clamp large updates to prevent instability - with relaxed yaw handling
-        const float maxDeltaR = deg2rad(15.0); // Max 15 degrees per iteration (放宽)
-        const float maxDeltaT = 1.5; // Max 1.5 meter per iteration (放宽)
-        const float maxDeltaYaw = constrainYaw ? deg2rad(3.0) : maxDeltaR; // Max 3 degree for yaw if constrained (放宽)
-        
-        if (fabs(matX.at<float>(0, 0)) > maxDeltaR) matX.at<float>(0, 0) = copysign(maxDeltaR, matX.at<float>(0, 0));
-        if (fabs(matX.at<float>(1, 0)) > maxDeltaR) matX.at<float>(1, 0) = copysign(maxDeltaR, matX.at<float>(1, 0));
-        if (fabs(matX.at<float>(2, 0)) > maxDeltaYaw) matX.at<float>(2, 0) = copysign(maxDeltaYaw, matX.at<float>(2, 0)); // Yaw constraint
-        if (fabs(matX.at<float>(3, 0)) > maxDeltaT) matX.at<float>(3, 0) = copysign(maxDeltaT, matX.at<float>(3, 0));
-        if (fabs(matX.at<float>(4, 0)) > maxDeltaT) matX.at<float>(4, 0) = copysign(maxDeltaT, matX.at<float>(4, 0));
-        if (fabs(matX.at<float>(5, 0)) > maxDeltaT) matX.at<float>(5, 0) = copysign(maxDeltaT, matX.at<float>(5, 0));
-        
-        if (constrainYaw && fabs(rad2deg(matX.at<float>(2, 0))) > 0.5) {
-            ROS_WARN("Frame %d Iter %d: Constraining yaw update from %.2f to %.2f degrees", 
-                     currentFrameId, iterCount, 
-                     rad2deg(matX.at<float>(2, 0)), 
-                     rad2deg(copysign(maxDeltaYaw, matX.at<float>(2, 0))));
-        }
-        
+
         transformTobeMapped[0] += matX.at<float>(0, 0);
         transformTobeMapped[1] += matX.at<float>(1, 0);
         transformTobeMapped[2] += matX.at<float>(2, 0);
         transformTobeMapped[3] += matX.at<float>(3, 0);
         transformTobeMapped[4] += matX.at<float>(4, 0);
         transformTobeMapped[5] += matX.at<float>(5, 0);
-        
-        // Recalculate deltas after clamping
-        deltaR = sqrt(pow(rad2deg(matX.at<float>(0, 0)), 2) +
-                     pow(rad2deg(matX.at<float>(1, 0)), 2) +
-                     pow(rad2deg(matX.at<float>(2, 0)), 2));
-        deltaT = sqrt(pow(matX.at<float>(3, 0) * 100, 2) +
-                     pow(matX.at<float>(4, 0) * 100, 2) +
-                     pow(matX.at<float>(5, 0) * 100, 2));
-        
-        // Enhanced convergence logging
-        if (iterCount % 3 == 0 || deltaR < convergenceThreshold * 2 || deltaT < convergenceThreshold * 2) {
-            ROS_INFO("Frame %d Iter %d: deltaR=%.3f deg, deltaT=%.3f cm (constraints=%d, degenerate=%s)", 
-                     currentFrameId, iterCount, deltaR, deltaT, laserCloudSelNum, isDegenerate ? "YES" : "NO");
-        }
-        
-        if (deltaR < convergenceThreshold && deltaT < convergenceThreshold) {
-            ROS_INFO("Frame %d: Converged at iteration %d (deltaR=%.3f, deltaT=%.3f)", 
-                     currentFrameId, iterCount, deltaR, deltaT);
+
+        float deltaR = sqrt(
+                            pow(rad2deg(matX.at<float>(0, 0)), 2) +
+                            pow(rad2deg(matX.at<float>(1, 0)), 2) +
+                            pow(rad2deg(matX.at<float>(2, 0)), 2));
+        float deltaT = sqrt(
+                            pow(matX.at<float>(3, 0) * 100, 2) +
+                            pow(matX.at<float>(4, 0) * 100, 2) +
+                            pow(matX.at<float>(5, 0) * 100, 2));
+
+        if (deltaR < 0.05 && deltaT < 0.05) {
             return true; // converged
         }
-        
-        // 检查是否迭代次数过多仍未收敛
-        if (iterCount >= maxIterations - 1) {
-            ROS_WARN("Frame %d: Failed to converge after %d iterations (deltaR=%.3f, deltaT=%.3f, constraints=%d)", 
-                     currentFrameId, iterCount + 1, deltaR, deltaT, laserCloudSelNum);
-        }
-        
         return false; // keep optimizing
     }
-    
+
     /**
      * Add current optimized frame to global map (with lazy loading)
      */
@@ -1103,8 +1137,8 @@ private:
         // Downsample the combined keyframe submap
         if (!keyframeSubmap->empty()) {
             pcl::PointCloud<PointType>::Ptr downsampledSubmap(new pcl::PointCloud<PointType>());
-            downSizeFilterScan.setInputCloud(keyframeSubmap);
-            downSizeFilterScan.filter(*downsampledSubmap);
+            downSizeFilterMap.setInputCloud(keyframeSubmap);
+            downSizeFilterMap.filter(*downsampledSubmap);
             keyframeSubmap = downsampledSubmap;
         }
         
@@ -1324,7 +1358,7 @@ private:
         }
         
         // Add loop closure constraints
-        auto loopNoise = noiseModel::Diagonal::Sigmas((Vector(6) << 0.1, 0.1, 0.1, 0.3, 0.3, 0.3).finished());
+        auto loopNoise = noiseModel::Diagonal::Sigmas((Vector(6) << 0.05, 0.05, 0.05, 0.1, 0.1, 0.1).finished());
         for (const auto& lc : loopClosures) {
             if (lc.first < maxFrameId && lc.second < maxFrameId) {
                 Pose3 relativePose = optimizedPoses[lc.second].inverse() * optimizedPoses[lc.first];
@@ -1383,7 +1417,7 @@ private:
             }
         }
 
-        pcl::io::savePCDFileBinary( "/home/tyjt/Desktop/ros_ws/Reconstructed_global_map.pcd", *globalMap);
+        // pcl::io::savePCDFileBinary( "/home/tyjt/Desktop/ros_ws/Reconstructed_global_map.pcd", *globalMap);
         
         // Final downsampling of global map
         // if (globalMap->size() > 10000) {

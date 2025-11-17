@@ -141,23 +141,15 @@ target_link_libraries(${PROJECT_NAME}_imuPreintegration Boost::timer ${catkin_LI
         )
 
 
-# G2O Optimizer
-add_executable(${PROJECT_NAME}_scan2map_opt src/scan2map_opt_global_map1.cpp)
-add_dependencies(${PROJECT_NAME}_scan2map_opt ${catkin_EXPORTED_TARGETS} ${PROJECT_NAME}_generate_messages_cpp)
-target_link_libraries(${PROJECT_NAME}_scan2map_opt ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} 
-        gtsam
-        /usr/local/lib/libtbb.so
-        /usr/local/lib/libtbbmalloc.so
-        /usr/local/lib/libtbbmalloc_proxy.so
-        ${GeographicLib_LIBRARIES}
-        ${LZ4_LIB}
-        nano_gicp_lib
-)
+
 
 
 add_executable(${PROJECT_NAME}_scan2map_opt_submap src/scan2map_opt_global_map.cpp)
 add_dependencies(${PROJECT_NAME}_scan2map_opt_submap ${catkin_EXPORTED_TARGETS} ${PROJECT_NAME}_generate_messages_cpp)
-target_link_libraries(${PROJECT_NAME}_scan2map_opt_submap ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} 
+target_link_libraries(${PROJECT_NAME}_scan2map_opt_submap 
+        -Wl,--no-as-needed
+        asan
+        ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBRARIES} 
         gtsam
         /usr/local/lib/libtbb.so
         /usr/local/lib/libtbbmalloc.so

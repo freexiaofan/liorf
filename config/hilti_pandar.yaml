@@ -33,9 +33,9 @@ liorf:
   N_SCAN: 128                                  # number of lidar channel (i.e., Velodyne/Ouster: 16, 32, 64, 128, Livox Horizon: 6)
   Horizon_SCAN: 2000                          # lidar horizontal resolution (Velodyne:1800, Ouster:512,1024,2048, Livox Horizon: 4000)
   downsampleRate: 1                           # default: 1. Downsample your data if too many points. i.e., 16 = 64 / 4, 16 = 16 / 1
-  point_filter_num: 2
+  point_filter_num: 1
   lidarMinRange: 3.0                       # default: 1.0, minimum lidar range to be used
-  lidarMaxRange: 100.0                       # default: 1000.0, maximum lidar range to be used
+  lidarMaxRange: 150.0                       # default: 1000.0, maximum lidar range to be used
   debugGps: false
   debugImu: false 
   debugLidarTimestamp: false
@@ -91,7 +91,7 @@ liorf:
   mappingProcessInterval: 0.15                  # seconds, regulate mapping frequency
 
   # Surrounding map
-  surroundingkeyframeAddingDistThreshold: 0.50   # meters, regulate keyframe adding threshold
+  surroundingkeyframeAddingDistThreshold: 1.0   # meters, regulate keyframe adding threshold
   surroundingkeyframeAddingAngleThreshold: 0.2  # radians, regulate keyframe adding threshold
   surroundingKeyframeDensity: 1.0               # meters, downsample surrounding keyframe poses
   surroundingKeyframeSearchRadius: 5.0          # meters, within n meters scan-to-map optimization (when loop closure disabled)
@@ -99,12 +99,12 @@ liorf:
 
   # Loop closure
   loopClosureEnableFlag: true
-  loopClosureFrequency: 1.0                     # Hz, regulate loop closure constraint add frequency
+  loopClosureFrequency: 0.250                     # Hz, regulate loop closure constraint add frequency
   surroundingKeyframeSize: 10                   # submap size (when loop closure enabled)
   historyKeyframeSearchRadius: 10.0             # meters, key frame that is within n meters from current pose will be considerd for loop closure
   historyKeyframeSearchTimeDiff: 50.0           # seconds, key frame that is n seconds older will be considered for loop closure
   historyKeyframeSearchNum: 10                  # number of hostory key frames will be fused into a submap for loop closure
-  historyKeyframeFitnessScore: 0.1              # icp threshold, the smaller the better alignment
+  historyKeyframeFitnessScore: 1.5              # icp threshold, the smaller the better alignment
   loopClosureICPSurfLeafSize: 0.15               # downsample icp point cloud  
   # Visualization
   globalMapVisualizationSearchRadius: 1000.0    # meters, global map visualization radius
